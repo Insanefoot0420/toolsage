@@ -16,7 +16,10 @@ import java.util.concurrent.TimeUnit
 object HttpClient {
 
     // ── ZMĚŇ PODLE POTŘEBY ─────────────────────────────
-    private const val BASE_URL = "http://10.0.2.2:3001/"
+    // EMULÁTOR:  http://10.0.2.2:3001/
+    // FYZICKÉ:   http://192.168.x.x:3001/
+    // PRODUKCE:  https://toolsage-backend.onrender.com/
+    private const val BASE_URL = "https://toolsage-backend.onrender.com/"
     // ───────────────────────────────────────────────────
     private const val TIMEOUT_SECONDS = 30L
 

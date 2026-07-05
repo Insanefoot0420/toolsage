@@ -6,7 +6,7 @@ import retrofit2.http.*
 
 /**
  * ToolSage REST API service interface
- * Base URL: https://api.toolsage.com/v1
+ * Base URL: https://toolsage-backend.onrender.com/
  */
 interface ApiService {
 
