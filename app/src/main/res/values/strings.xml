@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ToolSage</string>
+    <string name="tools">Nástroje</string>
+    <string name="search">Vyhledávání</string>
+    <string name="ai_assistant">AI Asistent</string>
+    <string name="profile">Profil</string>
+    <string name="add_tool">Přidat nástroj</string>
+    <string name="save">Uložit</string>
+    <string name="cancel">Zrušit</string>
+    <string name="delete">Smazat</string>
+    <string name="edit">Upravit</string>
+    <string name="share">Sdílet</string>
+    <string name="smart_import">Smart Import</string>
+    <string name="no_tools">Zatím zde nejsou žádné nástroje</string>
+    <string name="loading">Načítání…</string>
+    <string name="error_generic">Došlo k chybě</string>
+</resources>

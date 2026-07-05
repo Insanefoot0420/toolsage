@@ -1,0 +1,90 @@
+{
+  "audit_log": [
+    {
+      "id": "023a8125-2cc8-432b-9f17-8dcdd748de53",
+      "timestamp": "2026-07-04T23:35:37.446Z",
+      "action": "POST /chat",
+      "method": "POST",
+      "path": "/chat",
+      "user_id": "dev-user",
+      "user_type": "user",
+      "status_code": 200,
+      "agent_name": null,
+      "ip": "::1"
+    },
+    {
+      "id": "e2acd8aa-3bc8-4bda-865f-6791035a52ab",
+      "timestamp": "2026-07-04T23:35:40.319Z",
+      "action": "POST /",
+      "method": "POST",
+      "path": "/",
+      "user_id": "anonymous",
+      "user_type": "anonymous",
+      "status_code": 401,
+      "agent_name": null,
+      "ip": "::1"
+    },
+    {
+      "id": "0196c802-683a-45e7-890c-6e1c382ac900",
+      "timestamp": "2026-07-04T23:35:55.390Z",
+      "action": "POST /",
+      "method": "POST",
+      "path": "/",
+      "user_id": "dev-user",
+      "user_type": "user",
+      "status_code": 201,
+      "agent_name": null,
+      "ip": "::1"
+    },
+    {
+      "id": "d83460e4-aacc-45b7-b641-f8a5a3f1dfad",
+      "timestamp": "2026-07-04T23:36:01.913Z",
+      "action": "MCP:Tool.search",
+      "agent_id": "46735c38-c761-44ee-b389-e40a793b38ac",
+      "agent_name": "OpenCode Agent"
+    },
+    {
+      "id": "ec499d87-3558-4810-94a4-495fdf40a476",
+      "timestamp": "2026-07-04T23:36:04.201Z",
+      "action": "POST /",
+      "method": "POST",
+      "path": "/",
+      "user_id": "anonymous",
+      "user_type": "anonymous",
+      "status_code": 200,
+      "agent_name": null,
+      "ip": "::1"
+    },
+    {
+      "id": "c7c5ee49-ec4a-4ac9-a37e-6e7a4b242f65",
+      "timestamp": "2026-07-04T23:36:10.485Z",
+      "action": "MCP:system.info",
+      "agent_id": "46735c38-c761-44ee-b389-e40a793b38ac",
+      "agent_name": "OpenCode Agent"
+    },
+    {
+      "id": "300b46ea-835d-476c-9eb4-2d5aeba31880",
+      "timestamp": "2026-07-04T23:36:12.645Z",
+      "action": "POST /",
+      "method": "POST",
+      "path": "/",
+      "user_id": "anonymous",
+      "user_type": "anonymous",
+      "status_code": 200,
+      "agent_name": null,
+      "ip": "::1"
+    },
+    {
+      "id": "f47257e9-bc63-4851-8606-a8ec9645011f",
+      "timestamp": "2026-07-04T23:36:17.964Z",
+      "action": "POST /",
+      "method": "POST",
+      "path": "/",
+      "user_id": "dev-user",
+      "user_type": "user",
+      "status_code": 201,
+      "agent_name": null,
+      "ip": "::1"
+    }
+  ]
+}

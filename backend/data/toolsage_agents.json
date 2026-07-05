@@ -1,0 +1,19 @@
+{
+  "agents": [
+    {
+      "id": "46735c38-c761-44ee-b389-e40a793b38ac",
+      "name": "OpenCode Agent",
+      "description": "Test agent for OpenCode",
+      "api_key_hash": "cfe56f89533a233aa9c8a9fbd33c96544e94ecc5a22cc8722413f2e6dcda4b46",
+      "permissions": [
+        {
+          "actions": "read create update delete",
+          "resource": "tools"
+        }
+      ],
+      "created_by": "dev-user",
+      "created_at": "2026-07-04T23:35:52.603Z",
+      "last_activity_at": "2026-07-04T23:36:07.648Z"
+    }
+  ]
+}
