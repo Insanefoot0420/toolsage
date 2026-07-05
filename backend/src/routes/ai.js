@@ -1,6 +1,6 @@
 const express = require('express')
 const router = express.Router()
-const { supabase } = require('../db')
+const { supabase, supabaseAdmin } = require('../db')
 
 // POST /ai/chat - AI chat
 router.post('/chat', async (req, res) => {
@@ -11,123 +11,469 @@ router.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'Message is required' })
     }
 
-    // Log conversation
-    if (conversationHistory) {
-      for (const msg of conversationHistory) {
-        await supabase.from('chat_history')
-          .insert({ role: msg.role, content: msg.content })
-          .maybeSingle()
+    // ─── AI response logic ─────────────────────────────────────
+    const result = await generateAIResponse(message)
+
+    // ─── Pokud AI chtěl vytvořit nástroj ────────────────────────
+    if (result.action === 'create_tool' && result.toolData) {
+      try {
+        const client = supabaseAdmin || supabase
+        const { data: newTool, error: createError } = await client
+          .from('tools')
+          .insert({
+            name: result.toolData.name,
+            description: result.toolData.description || '',
+            categories: result.toolData.categories || [],
+            tags: result.toolData.tags || [],
+            pricingModel: result.toolData.pricingModel || 'free',
+            compatibility: result.toolData.compatibility || { os: [], platforms: [] },
+            setupGuides: result.toolData.setupGuides || ''
+          })
+          .select()
+          .single()
+
+        if (!createError && newTool) {
+          result.reply = `✅ **Nástroj "${newTool.name}" byl úspěšně přidán do databáze!**\n\n${result.reply}`
+          result.createdTool = { id: newTool.id, name: newTool.name }
+        } else {
+          result.reply = `❌ Nástroj se nepodařilo vytvořit: ${createError?.message || 'neznámá chyba'}\n\n${result.reply}`
+        }
+      } catch (createErr) {
+        result.reply = `❌ Chyba při vytváření nástroje: ${createErr.message}\n\n${result.reply}`
       }
     }
 
-    await supabase.from('chat_history')
-      .insert({ role: 'user', content: message })
-      .maybeSingle()
-
-    // AI response logic (works 100% offline - free, no API key needed)
-    const reply = generateAIResponse(message)
-
-    await supabase.from('chat_history')
-      .insert({ role: 'assistant', content: reply })
-      .maybeSingle()
+    // ─── Log to chat_history ───────────────────────────────────
+    try {
+      await supabase.from('chat_history').insert({ role: 'user', content: message }).maybeSingle()
+      await supabase.from('chat_history').insert({ role: 'assistant', content: result.reply }).maybeSingle()
+    } catch (_) { }
 
     res.json({
-      reply,
-      suggestedTools: extractToolSuggestions(message)
+      reply: result.reply,
+      suggestedTools: result.suggestedTools || [],
+      createdTool: result.createdTool || null
     })
   } catch (err) {
     console.error('AI chat error:', err.message)
-    // Always return response even without DB
     res.json({
-      reply: generateAIResponse(req.body.message || ''),
-      suggestedTools: extractToolSuggestions(req.body.message || '')
+      reply: 'Omlouvám se, došlo k chybě při zpracování požadavku. Zkuste to prosím znovu.',
+      suggestedTools: []
     })
   }
 })
 
-function generateAIResponse(query) {
-  const q = query.toLowerCase()
+// ─── Hlavní AI logika (databázová, ne hardcodovaná) ────────────
+async function generateAIResponse(query) {
+  const q = query.toLowerCase().trim()
 
-  // Tool recommendations
-  if (q.includes('doporuč') || q.includes('nejlepší') || q.includes('doporučil')) {
-    if (q.includes('ide') || q.includes('editor') || q.includes('kód')) {
-      return 'Doporučuji **Visual Studio Code** - je zdarma, lehký a má obrovský ekosystém rozšíření. Pro Android vývoj doporučuji **Android Studio**.'
+  // ─── Příkaz: přidej nástroj ─────────────────────────────────
+  const addMatch = q.match(/(?:přidej|pridej|vytvoř|vytvor|založ|zaloz|add|create|new tool)\s+(?:nástroj|nastroj|tool)?\s*(?:"([^"]+)"|'([^']+)'|nazvan[ýy]\s+([^"]+)|([a-zá-ž0-9\s]{3,80}))/i)
+  if (addMatch) {
+    const toolName = (addMatch[1] || addMatch[2] || addMatch[3] || addMatch[4] || '').trim()
+    if (toolName.length >= 2) {
+      // Zkus nejdřív vyhledat v databázi
+      const existing = await searchToolsInDB(toolName)
+      if (existing.length > 0) {
+        return {
+          reply: `Nástroj **"${toolName}"** už v databázi existuje!\n\n${formatToolList(existing.slice(0, 3))}\n\nChceš přidat jiný nástroj?`,
+          suggestedTools: existing.slice(0, 3).map(t => t.id)
+        }
+      }
+
+      // Pokud neexistuje, připrav vytvoření
+      const inferred = inferToolInfo(toolName)
+      return {
+        action: 'create_tool',
+        toolData: {
+          name: toolName,
+          description: inferred?.description || `${toolName} - vývojářský nástroj.`,
+          categories: inferred?.categories || ['Vývoj'],
+          tags: inferred?.tags || [],
+          pricingModel: inferred?.pricingModel || 'free'
+        },
+        reply: `Chystám se přidat nástroj **"${toolName}"** do databáze.\n📂 Kategorie: ${(inferred?.categories || ['Vývoj']).join(', ')}\n💰 Cena: ${pricingLabel(inferred?.pricingModel || 'free')}\n\nPokud chceš upravit detaily, napiš to. Jinak se rovnou vytvoří.`
+      }
     }
-    if (q.includes('design') || q.includes('ui') || q.includes('ux')) {
-      return 'Pro UI/UX design doporučuji **Figma** - je zdarma pro jednotlivce a podporuje kolaboraci v reálném čase.'
+  }
+
+  // ─── Příkaz: smaž nástroj ───────────────────────────────────
+  const deleteMatch = q.match(/(?:smaž|smaz|odstraň|odstran|delet|remove)\s+(?:nástroj|nastroj)?\s*(?:"([^"]+)"|'([^']+)'|([a-zá-ž0-9\s]{3,80}))/i)
+  if (deleteMatch) {
+    const toolName = (deleteMatch[1] || deleteMatch[2] || deleteMatch[3] || '').trim()
+    const found = await searchToolsInDB(toolName)
+    if (found.length > 0) {
+      try {
+        const client = supabaseAdmin || supabase
+        await client.from('tools').delete().eq('id', found[0].id)
+        return {
+          reply: `✅ Nástroj **"${found[0].name}"** byl smazán z databáze.`,
+          suggestedTools: []
+        }
+      } catch (e) {
+        return { reply: `❌ Nepodařilo se smazat nástroj: ${e.message}`, suggestedTools: [] }
+      }
     }
-    if (q.includes('database') || q.includes('databáze') || q.includes('backend')) {
-      return 'Pro backend doporučuji **Supabase** (open-source Firebase) nebo **Firebase** od Googlu. Obojí má štědrý free tier.'
+    return { reply: `Nástroj **"${toolName}"** nebyl v databázi nalezen.`, suggestedTools: [] }
+  }
+
+  // ─── Hledání v databázi + na webu (paralelně) ─────────────────
+  // Extrahuj relevantní téma pro web search
+  const webQuery = q
+    .replace(/^(doporuč|doporuc|najdi|hledej|hledat|potřebuji|potrebuji|chci|porad|tip|ukaz|představ|predstav|co je|cool)/i, '')
+    .replace(/\b(nástroj|nastroj|tool|software|aplikace|program)\b/gi, '')
+    .trim()
+    .substring(0, 100)
+  const [dbTools, webResult] = await Promise.all([
+    searchToolsInDB(q),
+    webSearchTool(webQuery || q, query)
+  ])
+  const topTools = dbTools.slice(0, 5)
+
+  // ─── Základní intenty ───────────────────────────────────────
+
+  // Pozdrav
+  if (q.match(/^(ahoj|nazdar|čau|cau|zdravím|zdravim|hi|hello|hey)/i)) {
+    const stats = await getDBStats()
+    return {
+      reply: `👋 Ahoj! Jsem **AI asistent ToolSage**.\n\n📊 V databázi mám **${stats.toolCount}** nástrojů ve **${stats.categoryCount}** kategoriích.\n\nUmím:\n- 🔍 **Vyhledat** nástroj — stačí napsat název\n- ➕ **Přidat** nástroj — napiš "přidej React Native"\n- ❌ **Smazat** nástroj — napiš "smaž nástroj XY"\n- 📋 **Doporučit** — napiš co potřebuješ\n\nS čím ti můžu pomoci?`,
+      suggestedTools: topTools.map(t => t.id)
     }
-    if (q.includes('ai') || q.includes('umělá inteligence')) {
-      return 'Pro AI vývoj doporučuji **Python** s frameworky jako TensorFlow nebo PyTorch. Pro AI v kódu zkus **GitHub Copilot**.'
+  }
+
+  // Doporučení — kombinuje DB + web
+  if (q.includes('doporuč') || q.includes('doporuc') || q.includes('nejlepší') || q.includes('nejlepsi') || q.includes('doporučil') || q.includes('doporucil') || q.includes('porad') || q.includes('co použít') || q.includes('co pouzit') || q.includes('tip')) {
+    let reply = '📋 **Doporučené nástroje:**\n\n'
+
+    if (topTools.length > 0) {
+      reply += '📦 **Z databáze:**\n'
+      topTools.slice(0, 3).forEach(t => {
+        reply += `  • **${t.name}** ${t.averageRating ? '⭐' + t.averageRating : ''} — ${(t.description || '').substring(0, 80)}\n`
+      })
+      reply += '\n'
     }
-    return 'Na základě databáze mám tyto nejlépe hodnocené nástroje:\n1. **Python** ⭐4.8 - univerzální programovací jazyk\n2. **VS Code** ⭐4.7 - nejlepší editor kódu\n3. **Figma** ⭐4.6 - UI/UX design\n4. **Android Studio** ⭐4.5 - Android IDE\n5. **Supabase** ⭐4.5 - open-source backend'
-  }
 
-  // Project-specific advice
-  if (q.includes('mobil') || q.includes('android') || q.includes('ios')) {
-    if (q.includes('cross') || q.includes('obě platformy')) {
-      return 'Pro cross-platform mobilní vývoj doporučuji **Flutter** nebo React Native. Flutter je od Googlu a používá Dart, React Native od Mety používá JavaScript/TypeScript.'
+    if (webResult) {
+      reply += `🌐 **Z webu:**\n  • **${webResult.name}**\n    ${(webResult.description || '').substring(0, 120)}\n    🌍 ${webResult.website || ''}\n    📂 ${(webResult.categories || ['?']).join(', ')} | 💰 ${pricingLabel(webResult.pricingModel) || '?'}\n\n`
     }
-    return 'Pro nativní Android vývoj použij **Android Studio** s Kotlin a Jetpack Compose. Pro iOS použij Xcode se SwiftUI.'
+
+    if (!topTools.length && !webResult) {
+      reply = 'V databázi zatím není moc nástrojů. Zkus přidat nějaký — napiš "přidej název_nástroje"!'
+    } else {
+      reply += 'Chceš vědět o některém víc? Stačí napsat název!'
+    }
+    return { reply, suggestedTools: topTools.map(t => t.id) }
   }
 
-  // Price/cost questions
-  if (q.includes('zdarma') || q.includes('cena') || q.includes('kolik stojí') || q.includes('free')) {
-    return 'Většina nástrojů v databázi má free nebo freemium model:\n- **Zdarma**: VS Code, Python, Android Studio, Docker, Flutter, Supabase\n- **Freemium**: Figma, Firebase, Postman\n- **Placené**: GitHub Copilot\n\nChceš doporučit nástroj podle konkrétní kategorie?'
+  // Statistiky / přehled
+  if (q.includes('kolik') || q.includes('statist') || q.includes('přehled') || q.includes('prehled') || q.includes('všechny') || q.includes('vsechny') || q.includes('seznam') || q.includes('list')) {
+    const stats = await getDBStats()
+    const recent = await getRecentTools(5)
+    let reply = `📊 **Přehled databáze:**\n\n`
+    reply += `📦 **${stats.toolCount}** nástrojů\n`
+    reply += `📂 **${stats.categoryCount}** kategorií\n\n`
+    reply += `**Nejnovější nástroje:**\n`
+    recent.forEach(t => { reply += `  • **${t.name}** — ${(t.description || '').substring(0, 60)}\n` })
+    reply += `\nChceš zobrazit všechny nástroje z nějaké kategorie?`
+    return { reply, suggestedTools: recent.map(t => t.id) }
   }
 
-  // General/about
-  if (q.includes('kdo jsi') || q.includes('co umíš') || q.includes('ahoj')) {
-    return '👋 Ahoj! Jsem **AI asistent ToolSage**.\n\nUmím:\n- ✅ Doporučit nástroje podle tvých potřeb\n- ✅ Poradit s výběrem technologie\n- ✅ Odpovědět na otázky ohledně nástrojů v databázi\n- ✅ Pomoci s Smart Importem nástrojů\n\nNa co se chceš zeptat?'
+  // Detail nástroje (když je v query název nástroje)
+  if (topTools.length > 0) {
+    let reply = `🔍 **Našel jsem v databázi:**\n\n${formatToolList(topTools)}\n`
+    // Pokud je málo DB výsledků a máme web výsledek, přidej ho jako bonus
+    if (topTools.length < 3 && webResult) {
+      reply += `\n🌐 **Také na webu:** **${webResult.name}** — ${(webResult.description || '').substring(0, 100)}\n🌍 ${webResult.website || ''}\n`
+    }
+    reply += `\nPro detail nástroje klikni na jeho název nebo se zeptej na konkrétní informace.`
+    return { reply, suggestedTools: topTools.map(t => t.id) }
   }
 
-  // Smart Import help
-  if (q.includes('import') || q.includes('smart')) {
-    return 'Smart Import umožňuje automaticky extrahovat nástroje z textu. Stačí vložit text obsahující informace o nástrojích a AI analyzuje a navrhne záznamy. Zkus to v sekci Smart Import!'
+  // Když není v DB - hledej na webu
+  if (webResult) {
+    return {
+      reply: `🌐 **Našel jsem na webu:**\n\n🔹 **${webResult.name}**\n📝 ${webResult.description || 'Popis není k dispozici'}\n🌍 ${webResult.website || ''}\n${webResult.github ? '💻 ' + webResult.github + '\n' : ''}💰 ${webResult.pricingModel ? pricingLabel(webResult.pricingModel) : '?'}\n📂 ${(webResult.categories || []).join(', ') || '?'}\n\n❌ Tento nástroj **není v databázi**.\n\nChceš ho přidat? Napiš **"přidej ${webResult.name}"**\nNebo hledám něco jiného?`,
+      suggestedTools: []
+    }
   }
 
-  // Default response with tool database query
-  const toolMatch = getDemoTools().filter(t =>
-    t.name.toLowerCase().includes(q) ||
-    t.tags.some(tag => tag.toLowerCase().includes(q)) ||
-    t.categories.some(cat => cat.toLowerCase().includes(q))
-  )
-
-  if (toolMatch.length > 0) {
-    const suggestions = toolMatch.slice(0, 3).map(t =>
-      `- **${t.name}** ⭐${t.averageRating} - ${t.description.substring(0, 60)}...`
-    ).join('\n')
-    return `Našel jsem tyto související nástroje:\n${suggestions}\n\nChceš o nějakém více informací?`
+  // Výchozí odpověď
+  return {
+    reply: `Rozumím! Zpracovávám dotaz ohledně **"${query.substring(0, 100)}"**.\n\nCo můžeš udělat:\n1. 🔍 **Vyhledat nástroj** — napiš jeho název\n2. ➕ **Přidat nový nástroj** — napiš "přidej název"\n3. 🌐 **Hledat na webu** — napiš co hledáš (např. "najdi nástroj na analýzu dat")\n4. 📋 **Doporučení** — napiš co potřebuješ (např. "doporuč IDE")\n5. 📊 **Přehled** — napiš "kolik máš nástrojů"`,
+    suggestedTools: []
   }
-
-  return `Rozumím! Zpracovávám tvůj dotaz ohledně "${query.substring(0, 100)}".\n\nPro lepší odpověď mi prosím ujasni:\n1. Jaký typ nástroje hledáš? (IDE, framework, databáze...)\n2. Na jakou platformu? (mobil, web, desktop)\n3. Potřebuješ něco zdarma nebo může být placené?`
 }
 
-function extractToolSuggestions(query) {
-  const q = query.toLowerCase()
-  const matches = getDemoTools().filter(t =>
-    t.name.toLowerCase().includes(q) ||
-    t.tags.some(tag => tag.toLowerCase().includes(q)) ||
-    t.categories.some(cat => cat.toLowerCase().includes(q))
-  )
-  return matches.slice(0, 3).map(t => t.id)
+// ─── Vyhledávání v Supabase ─────────────────────────────────────
+async function searchToolsInDB(query) {
+  if (!supabase) return []
+  try {
+    const words = query.split(/\s+/).filter(w => w.length > 2)
+    if (words.length === 0) return []
+
+    // Postav OR podmínku
+    const conditions = words.map(w => `name.ilike.%${w}%,description.ilike.%${w}%`).join(',')
+    const tagConditions = words.map(w => `tags.cs.{${w}}`).join(',')
+
+    const { data } = await supabase
+      .from('tools')
+      .select('id, name, description, categories, tags, "pricingModel", "averageRating", "reviewCount"')
+      .or(conditions)
+      .limit(10)
+
+    return data || []
+  } catch (e) {
+    console.error('[AI] search error:', e.message)
+    return []
+  }
 }
 
-function getDemoTools() {
-  return [
-    { id: 'android-studio', name: 'Android Studio', description: 'Oficiální IDE pro vývoj Android aplikací.', tags: ['IDE', 'Android', 'Kotlin'], categories: ['Vývoj', 'Mobilní'], averageRating: 4.5 },
-    { id: 'vscode', name: 'Visual Studio Code', description: 'Lehký editor kódu od Microsoftu.', tags: ['Editor', 'IDE'], categories: ['Vývoj'], averageRating: 4.7 },
-    { id: 'firebase', name: 'Firebase', description: 'Backendová platforma od Googlu.', tags: ['BaaS', 'Database'], categories: ['Backend', 'Cloud'], averageRating: 4.2 },
-    { id: 'figma', name: 'Figma', description: 'Nástroj pro UI/UX design.', tags: ['UI', 'UX'], categories: ['Design'], averageRating: 4.6 },
-    { id: 'python', name: 'Python', description: 'Interpretovaný programovací jazyk.', tags: ['Language'], categories: ['Vývoj', 'AI/ML'], averageRating: 4.8 },
-    { id: 'flutter', name: 'Flutter', description: 'UI toolkit pro nativní aplikace.', tags: ['Framework', 'CrossPlatform'], categories: ['Mobilní'], averageRating: 4.4 },
-    { id: 'docker', name: 'Docker', description: 'Platforma pro containerizaci.', tags: ['Containers', 'DevOps'], categories: ['DevOps'], averageRating: 4.4 },
-    { id: 'supabase', name: 'Supabase', description: 'Open-source alternativa Firebase.', tags: ['Database', 'BaaS'], categories: ['Backend', 'Cloud'], averageRating: 4.5 },
-    { id: 'github-copilot', name: 'GitHub Copilot', description: 'AI asistent pro psaní kódu.', tags: ['AI', 'Coding'], categories: ['AI/ML'], averageRating: 4.3 },
-    { id: 'postman', name: 'Postman', description: 'Platforma pro API development.', tags: ['API', 'Testing'], categories: ['Backend'], averageRating: 4.1 },
-  ]
+// ─── Získání statistik ──────────────────────────────────────────
+async function getDBStats() {
+  if (!supabase) return { toolCount: 0, categoryCount: 0 }
+  try {
+    const { count: toolCount } = await supabase.from('tools').select('*', { count: 'exact', head: true })
+    const { data: cats } = await supabase.from('categories').select('name')
+    return { toolCount: toolCount || 0, categoryCount: cats?.length || 0 }
+  } catch { return { toolCount: 0, categoryCount: 0 } }
+}
+
+// ─── Poslední nástroje ──────────────────────────────────────────
+async function getRecentTools(limit = 5) {
+  if (!supabase) return []
+  try {
+    const { data } = await supabase.from('tools').select('id, name, description').order('created_at', { ascending: false }).limit(limit)
+    return data || []
+  } catch { return [] }
+}
+
+// ─── Vyhledávání nástrojů na webu (SerpAPI/Brave/fallback) ────
+async function webSearchTool(toolName, fullQuery) {
+  // Zkusíme Brave Search API (zdarma 2000 dotazů/měsíc)
+  // Pokud BRAVE_API_KEY není nastaven, fallback na Google scraping + SerpAPI + DuckDuckGo
+  const braveKey = process.env.BRAVE_API_KEY
+  const serpKey = process.env.SERPAPI_KEY
+
+  // Prioritně Brave Search
+  if (braveKey) {
+    try {
+      const https = require('https')
+      const q = encodeURIComponent(fullQuery || `${toolName} developer tool`)
+      const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${q}&count=5`
+
+      const data = await new Promise((resolve, reject) => {
+        const req = https.get(braveUrl, {
+          timeout: 6000,
+          headers: {
+            'Accept': 'application/json',
+            'Accept-Encoding': 'gzip',
+            'X-Subscription-Token': braveKey
+          }
+        }, (res) => {
+          let body = ''
+          res.on('data', chunk => { body += chunk.toString() })
+          res.on('end', () => resolve(body))
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      })
+
+      const json = JSON.parse(data)
+      const results = json.web?.results || []
+      if (results.length > 0) {
+        const top = results[0]
+        const desc = top.description || top.snippet || ''
+        // Zkus extrahovat kategorii z title/description
+        const categories = classifyToolCategory(top.title + ' ' + desc)
+        return {
+          name: top.title || toolName,
+          description: desc.substring(0, 300),
+          website: top.url || '',
+          github: extractGithub(top.url, desc),
+          pricingModel: detectPricing(top.title + ' ' + desc),
+          categories: categories,
+          source: 'brave'
+        }
+      }
+    } catch (e) {
+      console.error('[WebSearch] Brave error:', e.message)
+    }
+  }
+
+  // Fallback: SerpAPI (Google results)
+  if (serpKey) {
+    try {
+      const https = require('https')
+      const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
+      const serpUrl = `https://serpapi.com/search.json?q=${q}&api_key=${serpKey}&num=5`
+
+      const data = await new Promise((resolve, reject) => {
+        https.get(serpUrl, { timeout: 6000 }, (res) => {
+          let body = ''
+          res.on('data', chunk => { body += chunk.toString() })
+          res.on('end', () => resolve(body))
+        }).on('error', reject)
+      })
+
+      const json = JSON.parse(data)
+      const results = json.organic_results || []
+      if (results.length > 0) {
+        const top = results[0]
+        const desc = top.snippet || ''
+        return {
+          name: top.title || toolName,
+          description: desc.substring(0, 300),
+          website: top.link || '',
+          github: extractGithub(top.link, desc),
+          pricingModel: detectPricing(top.title + ' ' + desc),
+          categories: classifyToolCategory(top.title + ' ' + desc),
+          source: 'serpapi'
+        }
+      }
+    } catch (e) {
+      console.error('[WebSearch] SerpAPI error:', e.message)
+    }
+  }
+
+  // Fallback: DuckDuckGo (vždy zdarma, bez API klíče)
+  try {
+    const https = require('https')
+    const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
+    const ddgUrl = `https://html.duckduckgo.com/html/?q=${q}`
+
+    const html = await new Promise((resolve, reject) => {
+      const req = https.get(ddgUrl, {
+        timeout: 8000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        }
+      }, (res) => {
+        let data = ''
+        res.on('data', chunk => { data += chunk.toString() })
+        res.on('end', () => resolve(data))
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    })
+
+    // DDG v2 - novější HTML struktura
+    const results = []
+    // Zkus novější formát DDG výsledků
+    let resultRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+    let match
+    while ((match = resultRegex.exec(html)) !== null && results.length < 3) {
+      const snippetMatch = html.substring(match.index).match(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i)
+      results.push({
+        url: match[1],
+        title: match[2].replace(/<[^>]*>/g, '').trim(),
+        snippet: snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, '').trim() : ''
+      })
+    }
+
+    // Pokud první regex nefungoval, zkus fallback parsování
+    if (results.length === 0) {
+      // Jednodušší extrakce - hledej všechny odkazy s class="result_"
+      const simplerRegex = /<a[^>]*class="result_[^"]*"[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+      while ((match = simplerRegex.exec(html)) !== null && results.length < 5) {
+        results.push({
+          url: match[1],
+          title: match[2].replace(/<[^>]*>/g, '').trim(),
+          snippet: ''
+        })
+      }
+    }
+
+    if (results.length > 0) {
+      const top = results[0]
+      return {
+        name: top.title || toolName,
+        description: (top.snippet || '').substring(0, 300),
+        website: top.url || '',
+        github: extractGithub(top.url, top.snippet || ''),
+        pricingModel: detectPricing(top.title + ' ' + (top.snippet || '')),
+        categories: classifyToolCategory(top.title + ' ' + (top.snippet || '')),
+        source: 'duckduckgo'
+      }
+    }
+  } catch (e) {
+    console.error('[WebSearch] DDG error:', e.message)
+  }
+
+  // Fallback: AI inference z názvu (vždy funguje offline)
+  console.log('[WebSearch] All web sources failed, using AI inference for:', toolName)
+  const aiGuess = inferToolInfo(toolName)
+  if (aiGuess) {
+    return {
+      name: aiGuess.name || toolName,
+      description: aiGuess.description + ' (odhad z názvu — pro přesnější info nastav BRAVE_API_KEY)',
+      website: '',
+      github: '',
+      pricingModel: aiGuess.pricingModel || '',
+      categories: aiGuess.categories || [],
+      source: 'ai_inference'
+    }
+  }
+
+  return null
+}
+
+// ─── Pomocné funkce pro webSearchTool ──────────────────────────
+function extractGithub(url, text) {
+  if (!url && !text) return ''
+  const str = (url || '') + ' ' + (text || '')
+  const m = str.match(/https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/)
+  return m ? m[0].replace(/\/$/, '') : ''
+}
+
+function detectPricing(text) {
+  const lower = text.toLowerCase()
+  if (lower.includes('open source') || lower.includes('free software') || lower.includes('mit license') || lower.includes('apache 2.0') || lower.includes('gpl')) return 'open_source'
+  if (lower.includes('free') && (lower.includes('tier') || lower.includes('plan') || lower.includes('basic'))) return 'freemium'
+  if (lower.includes('pricing') || lower.includes('subscription') || lower.includes('premium') || lower.includes('pro') || lower.includes('enterprise')) return 'paid'
+  if (lower.includes('free')) return 'free'
+  return ''
+}
+
+function classifyToolCategory(text) {
+  const cats = []
+  const lower = text.toLowerCase()
+  if (lower.includes('ide') || lower.includes('editor') || lower.includes('code') || lower.includes('programming')) cats.push('Vývoj')
+  if (lower.includes('ai') || lower.includes('machine learning') || lower.includes('ml') || lower.includes('gpt') || lower.includes('neural')) cats.push('AI/ML')
+  if (lower.includes('database') || lower.includes('sql') || lower.includes('nosql') || lower.includes('db')) cats.push('Databáze')
+  if (lower.includes('cloud') || lower.includes('devops') || lower.includes('deploy') || lower.includes('ci/cd') || lower.includes('pipeline')) cats.push('DevOps')
+  if (lower.includes('design') || lower.includes('ui') || lower.includes('ux') || lower.includes('figma') || lower.includes('prototype')) cats.push('Design')
+  if (lower.includes('security') || lower.includes('auth') || lower.includes('encrypt') || lower.includes('vpn')) cats.push('Bezpečnost')
+  if (lower.includes('mobile') || lower.includes('android') || lower.includes('ios') || lower.includes('flutter')) cats.push('Mobilní')
+  if (cats.length === 0) cats.push('Ostatní')
+  return cats
+}
+
+// ─── Formátování seznamu nástrojů ───────────────────────────────
+function formatToolList(tools) {
+  return tools.map((t, i) => {
+    const rating = t.averageRating ? `⭐${t.averageRating}` : '⭐N/A'
+    const cats = (t.categories || []).join(', ')
+    return `${i + 1}. **${t.name}** ${rating}\n   📝 ${(t.description || 'Popis není k dispozici').substring(0, 100)}\n   📂 ${cats || 'Bez kategorie'}`
+  }).join('\n\n')
+}
+
+function groupByCategory(tools) {
+  const grouped = {}
+  tools.forEach(t => {
+    const cats = t.categories && t.categories.length > 0 ? t.categories : ['Ostatní']
+    cats.forEach(cat => {
+      if (!grouped[cat]) grouped[cat] = []
+      grouped[cat].push(t)
+    })
+  })
+  return grouped
+}
+
+function pricingLabel(model) {
+  const labels = { free: '💚 Zdarma', freemium: '💛 Freemium', paid: '💜 Placené', open_source: '💙 Open Source' }
+  return labels[model] || model || 'Neznámé'
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -254,7 +600,7 @@ function inferToolInfo(name) {
   const n = name.toLowerCase()
 
   // IDE / Editory
-  if (n.includes('ide') || n.includes('studio') || n.includes('code') || n.includes('editor') || n.includes('vim') || n.includes('sublime')) {
+  if (n.includes('ide') || n.includes('studio') || n.includes('code') || n.includes('editor') || n.includes('vim') || n.includes('sublime') || n.includes('vývoj') || n.includes('vyvoj') || n.includes('programování') || n.includes('programovani')) {
     return {
       name: name,
       description: `${name} je vývojářské IDE/editor kódu pro efektivní programování.`,
@@ -320,7 +666,7 @@ function inferToolInfo(name) {
   }
 
   // Security
-  if (n.includes('security') || n.includes('auth') || n.includes('oauth') || n.includes('jwt') || n.includes('firewall') || n.includes('encrypt')) {
+  if (n.includes('security') || n.includes('auth') || n.includes('hesel') || n.includes('heslo') || n.includes('password') || n.includes('oauth') || n.includes('jwt') || n.includes('firewall') || n.includes('encrypt') || n.includes('šifrov') || n.includes('sifrov') || n.includes('bezpečnost') || n.includes('bezpecnost') || n.includes('vpn') || n.includes('2fa') || n.includes('otp')) {
     return {
       name: name,
       description: `${name} je bezpečnostní nástroj pro ochranu aplikací a dat.`,

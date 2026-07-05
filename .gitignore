@@ -14,3 +14,7 @@ backend/.env
 # OS
 .DS_Store
 Thumbs.db
+
+# Tunnel
+run-tunnel.bat
+tunnel-*.log
