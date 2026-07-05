@@ -130,4 +130,218 @@ function getDemoTools() {
   ]
 }
 
+// ═══════════════════════════════════════════════════════════════
+// POST /ai/lookup-tool - AI lookup tool info
+// ═══════════════════════════════════════════════════════════════
+
+router.post('/lookup-tool', async (req, res) => {
+  try {
+    const { name, url } = req.body
+
+    if (!name || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Název nástroje je povinný' })
+    }
+
+    const toolName = name.trim()
+    const response = {
+      found: false,
+      name: toolName,
+      description: '',
+      categories: [],
+      tags: [],
+      pricingModel: '',
+      website: url || '',
+      github: '',
+      confidence: 0,
+      source: ''
+    }
+
+    // 1. Hledej v lokální databázi
+    if (supabase) {
+      const { data: dbResults } = await supabase
+        .from('tools')
+        .select('id, name, description, categories, tags, "pricingModel", compatibility, "averageRating", "reviewCount", "setupGuides"')
+        .or(`name.ilike.%${toolName}%,description.ilike.%${toolName}%`)
+        .limit(5)
+
+      if (dbResults && dbResults.length > 0) {
+        const exact = dbResults.find(t => t.name.toLowerCase() === toolName.toLowerCase())
+        const match = exact || dbResults[0]
+
+        response.found = true
+        response.name = match.name
+        response.description = match.description || ''
+        response.categories = match.categories || []
+        response.tags = match.tags || []
+        response.pricingModel = match.pricingModel || ''
+        response.confidence = exact ? 1.0 : 0.7
+        response.source = 'database'
+
+        return res.json(response)
+      }
+    }
+
+    // 2. Zkus vyhledat na webu (pokud máme URL)
+    if (url && url.startsWith('http')) {
+      try {
+        const https = require('https')
+        const http = url.startsWith('https') ? https : http
+
+        const html = await new Promise((resolve, reject) => {
+          const req = http.get(url, { timeout: 8000 }, (res) => {
+            let data = ''
+            res.on('data', chunk => { data += chunk.toString().substring(0, 50000) })
+            res.on('end', () => resolve(data))
+          })
+          req.on('error', reject)
+          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+        })
+
+        // Extrahuj metadata z HTML
+        const title = html.match(/<title>(.*?)<\/title>/i)?.[1] || toolName
+        const desc = html.match(/<meta[^>]*name="description"[^>]*content="([^"]*)"/i)?.[1]
+          || html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]*)"/i)?.[1]
+          || ''
+        const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/i)?.[1] || title
+
+        response.found = true
+        response.name = ogTitle || title || toolName
+        response.description = desc || `Nástroj nalezený na ${url}`
+        response.website = url
+        response.confidence = 0.5
+        response.source = 'web'
+
+        // Zkus extrahovat GitHub URL
+        const ghMatch = html.match(/github\.com\/[\w.-]+\/[\w.-]+/i)
+        if (ghMatch) response.github = `https://${ghMatch[0]}`
+
+        // Detekuj cenu z obsahu
+        const lower = html.toLowerCase()
+        if (lower.includes('open source') || lower.includes('free software')) response.pricingModel = 'open_source'
+        else if (lower.includes('pricing') || lower.includes('subscription') || lower.includes('premium')) response.pricingModel = 'freemium'
+
+        return res.json(response)
+      } catch (webErr) {
+        console.error('[AILookup] Web search failed:', webErr.message)
+      }
+    }
+
+    // 3. AI inferrence z názvu
+    const aiGuess = inferToolInfo(toolName)
+    if (aiGuess) {
+      response.found = true
+      response.name = aiGuess.name || toolName
+      response.description = aiGuess.description || ''
+      response.categories = aiGuess.categories || []
+      response.tags = aiGuess.tags || []
+      response.pricingModel = aiGuess.pricingModel || ''
+      response.confidence = 0.3
+      response.source = 'ai'
+      return res.json(response)
+    }
+
+    // 4. Nenalezeno
+    res.json(response)
+
+  } catch (err) {
+    console.error('[AILookup] Error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── AI inference based on tool name ──────────────────────────
+function inferToolInfo(name) {
+  const n = name.toLowerCase()
+
+  // IDE / Editory
+  if (n.includes('ide') || n.includes('studio') || n.includes('code') || n.includes('editor') || n.includes('vim') || n.includes('sublime')) {
+    return {
+      name: name,
+      description: `${name} je vývojářské IDE/editor kódu pro efektivní programování.`,
+      categories: ['Vývoj'],
+      tags: ['IDE', 'Editor'],
+      pricingModel: 'free'
+    }
+  }
+
+  // AI nástroje
+  if (n.includes('ai') || n.includes('gpt') || n.includes('chat') || n.includes('neural') || n.includes('machine learning') || n.includes('tensor') || n.includes('pytorch')) {
+    return {
+      name: name,
+      description: `${name} je AI/ML nástroj pro práci s umělou inteligencí.`,
+      categories: ['AI/ML'],
+      tags: ['AI', 'Machine Learning'],
+      pricingModel: 'freemium'
+    }
+  }
+
+  // Databáze
+  if (n.includes('database') || n.includes('db') || n.includes('sql') || n.includes('nosql') || n.includes('mongo') || n.includes('postgres') || n.includes('mysql') || n.includes('redis')) {
+    return {
+      name: name,
+      description: `${name} je databázový systém pro ukládání a správu dat.`,
+      categories: ['Databáze'],
+      tags: ['Database'],
+      pricingModel: 'free'
+    }
+  }
+
+  // Frameworky
+  if (n.includes('framework') || n.includes('react') || n.includes('angular') || n.includes('vue') || n.includes('spring') || n.includes('django') || n.includes('laravel') || n.includes('rails')) {
+    return {
+      name: name,
+      description: `${name} je vývojový framework pro tvorbu aplikací.`,
+      categories: ['Vývoj', 'Frontend'],
+      tags: ['Framework'],
+      pricingModel: 'free'
+    }
+  }
+
+  // Cloud / DevOps
+  if (n.includes('cloud') || n.includes('aws') || n.includes('azure') || n.includes('gcp') || n.includes('docker') || n.includes('kubernetes') || n.includes('deploy')) {
+    return {
+      name: name,
+      description: `${name} je cloudová/devops platforma pro nasazení a správu aplikací.`,
+      categories: ['Cloud', 'DevOps'],
+      tags: ['Cloud', 'DevOps'],
+      pricingModel: 'freemium'
+    }
+  }
+
+  // Design
+  if (n.includes('design') || n.includes('figma') || n.includes('sketch') || n.includes('photoshop') || n.includes('illustrator') || n.includes('ui') || n.includes('ux')) {
+    return {
+      name: name,
+      description: `${name} je nástroj pro design a prototypování uživatelských rozhraní.`,
+      categories: ['Design'],
+      tags: ['Design', 'UI/UX'],
+      pricingModel: 'freemium'
+    }
+  }
+
+  // Security
+  if (n.includes('security') || n.includes('auth') || n.includes('oauth') || n.includes('jwt') || n.includes('firewall') || n.includes('encrypt')) {
+    return {
+      name: name,
+      description: `${name} je bezpečnostní nástroj pro ochranu aplikací a dat.`,
+      categories: ['Bezpečnost'],
+      tags: ['Security'],
+      pricingModel: 'freemium'
+    }
+  }
+
+  // Mobile
+  if (n.includes('mobile') || n.includes('flutter') || n.includes('react native') || n.includes('kotlin') || n.includes('swift') || n.includes('xcode')) {
+    return {
+      name: name,
+      description: `${name} je nástroj/platforma pro vývoj mobilních aplikací.`,
+      categories: ['Mobilní'],
+      tags: ['Mobile'],
+      pricingModel: 'free'
+    }
+  }
+
+  return null
+}
+
 module.exports = router

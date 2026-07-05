@@ -30,6 +30,7 @@ sealed class Screen(
     data object SmartImportReview : Screen("smart_import_review", "Revize importu")
     data object Settings : Screen("settings", "Nastavení")
     data object AgentManager : Screen("agent_manager", "Správa agentů")
+    data object CategoryManager : Screen("category_manager", "Správa kategorií")
 }
 
 /**

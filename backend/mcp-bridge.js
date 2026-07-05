@@ -13,14 +13,17 @@
  *     "toolsage": {
  *       "command": "node",
  *       "args": ["C:/Users/insane/Documents/databazetools/ToolSage/backend/mcp-bridge.js", "<api-key>"],
- *       "env": {}
+ *       "env": {
+ *         "TOOLSAGE_BACKEND_URL": "https://toolsage-backend.onrender.com"
+ *       }
  *     }
  *   }
  */
 
 const http = require('http');
+const https = require('https');
 const TOOLSAGE_API_KEY = process.argv[2] || process.env.TOOLSAGE_API_KEY;
-const BACKEND_URL = process.env.TOOLSAGE_BACKEND_URL || 'http://localhost:3001';
+const BACKEND_URL = process.env.TOOLSAGE_BACKEND_URL || 'https://toolsage-backend.onrender.com';
 
 if (!TOOLSAGE_API_KEY) {
   console.error('[ToolSage MCP] CHYBA: Neni zadan API klic.');
@@ -29,9 +32,7 @@ if (!TOOLSAGE_API_KEY) {
   process.exit(1);
 }
 
-/**
- * Call ToolSage MCP endpoint via HTTP
- */
+// ─── HTTP client ──────────────────────────────────────────────
 function callMCP(method, params = {}) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
@@ -41,27 +42,31 @@ function callMCP(method, params = {}) {
       id: Date.now()
     });
 
-    const url = new URL('/api/mcp', BACKEND_URL);
+    const url = new URL('/mcp', BACKEND_URL);
+    const transport = url.protocol === 'https:' ? https : http;
+
     const options = {
       hostname: url.hostname,
-      port: url.port,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
-        'X-API-Key': TOOLSAGE_API_KEY
+        'X-API-Key': TOOLSAGE_API_KEY,
+        'X-Agent-Id': 'opencode',
+        'X-Agent-Name': 'OpenCode Agent'
       }
     };
 
-    const req = http.request(options, (res) => {
+    const req = transport.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => data += chunk);
       res.on('end', () => {
         try {
           resolve(JSON.parse(data));
         } catch (e) {
-          resolve({ error: { message: 'Failed to parse response' } });
+          resolve({ error: { message: `Failed to parse response: ${data.substring(0, 200)}` } });
         }
       });
     });
@@ -72,17 +77,116 @@ function callMCP(method, params = {}) {
   });
 }
 
-// ─── MCP over stdio (JSON-RPC) ──────────────────────────────
-// Standard MCP transport: read JSON-RPC from stdin, write to stdout
+// ─── MCP Tools definition ─────────────────────────────────────
+const TOOLS = [
+  {
+    name: 'list_tools',
+    description: 'Vrátí seznam všech nástrojů v databázi. Podporuje filtrování podle kategorie, hledání a tagů.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: 'Filtrovat podle kategorie (např. Vývoj, AI/ML, Design)' },
+        search: { type: 'string', description: 'Fulltextové hledání v názvu a popisu' },
+        tag: { type: 'string', description: 'Filtrovat podle tagu' },
+        limit: { type: 'number', description: 'Maximální počet výsledků (default 50)' }
+      }
+    }
+  },
+  {
+    name: 'get_tool',
+    description: 'Získat detailní informace o konkrétním nástroji podle ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'ID nástroje (např. android-studio, firebase)' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'search_tools',
+    description: 'Pokročilé vyhledávání nástrojů podle kombinace kritérií.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Hledaný text' },
+        categories: { type: 'array', items: { type: 'string' }, description: 'Seznam kategorií' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Seznam tagů' },
+        pricing: { type: 'string', enum: ['free', 'freemium', 'paid'], description: 'Cenový model' },
+        minRating: { type: 'number', description: 'Minimální hodnocení (0-5)' }
+      }
+    }
+  },
+  {
+    name: 'create_tool',
+    description: 'Vytvoří nový nástroj v databázi. Agent musí mít oprávnění create.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Název nástroje' },
+        description: { type: 'string', description: 'Popis nástroje' },
+        categories: { type: 'array', items: { type: 'string' }, description: 'Seznam kategorií' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Seznam tagů' },
+        pricingModel: { type: 'string', enum: ['free', 'freemium', 'paid'], description: 'Cenový model' }
+      },
+      required: ['name', 'description']
+    }
+  },
+  {
+    name: 'update_tool',
+    description: 'Aktualizuje existující nástroj v databázi. Agent musí mít oprávnění update.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'ID nástroje k aktualizaci' },
+        name: { type: 'string', description: 'Nový název' },
+        description: { type: 'string', description: 'Nový popis' },
+        categories: { type: 'array', items: { type: 'string' } },
+        tags: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'delete_tool',
+    description: 'Smaže nástroj z databáze. Vyžaduje potvrzení parametrem confirm: true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'ID nástroje ke smazání' },
+        confirm: { type: 'boolean', description: 'Potvrzení smazání (musí být true)' }
+      },
+      required: ['id', 'confirm']
+    }
+  },
+  {
+    name: 'list_categories',
+    description: 'Vrátí seznam všech kategorií nástrojů.',
+    inputSchema: { type: 'object', properties: {} }
+  }
+];
 
+// ─── Tool name mapping ────────────────────────────────────────
+const TOOL_METHOD_MAP = {
+  'list_tools': 'list_tools',
+  'get_tool': 'get_tool',
+  'search_tools': 'search_tools',
+  'create_tool': 'create_tool',
+  'update_tool': 'update_tool',
+  'delete_tool': 'delete_tool',
+  'list_categories': 'list_categories'
+};
+
+// ─── MCP over stdio ───────────────────────────────────────────
 const readline = require('readline');
 const rl = readline.createInterface({ input: process.stdin });
 
-console.error('[ToolSage MCP] Bridge ready. Connected to', BACKEND_URL);
+console.error(`[ToolSage MCP] Bridge ready. Connected to ${BACKEND_URL}`);
+console.error(`[ToolSage MCP] ${TOOLS.length} tools available`);
 console.error('[ToolSage MCP] Waiting for JSON-RPC messages on stdin...');
 
-// Send initialization message
-const initMsg = JSON.stringify({
+// Send initialization
+process.stdout.write(JSON.stringify({
   jsonrpc: '2.0',
   method: 'initialize',
   params: {
@@ -91,165 +195,87 @@ const initMsg = JSON.stringify({
     clientInfo: { name: 'opencode', version: '1.0.0' }
   },
   id: 0
-});
-process.stdout.write(initMsg + '\n');
+}) + '\n');
 
 rl.on('line', async (line) => {
   try {
     const request = JSON.parse(line.trim());
     const { method, params, id } = request;
 
-    console.error('[ToolSage MCP] Received method:', method);
+    console.error('[ToolSage MCP] Received:', method);
 
     let response;
 
     switch (method) {
-      // ─── MCP initialization ──────────────────────────
       case 'initialize':
         response = {
           jsonrpc: '2.0',
           result: {
             protocolVersion: '2024-11-05',
             serverInfo: { name: 'ToolSage MCP Bridge', version: '1.0.0' },
-            capabilities: {
-              tools: {
-                list: true,
-                call: true
-              }
-            }
+            capabilities: { tools: { listChanged: true } }
           },
           id
         };
         break;
 
       case 'notifications/initialized':
-        // No response needed for notifications
-        return;
+        return; // no response
 
-      // ─── List available tools ────────────────────────
       case 'tools/list':
         response = {
           jsonrpc: '2.0',
-          result: {
-            tools: [
-              {
-                name: 'search_tools',
-                description: 'Vyhledat nastroje v ToolSage databazi',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    query: { type: 'string', description: 'Hledany text' },
-                    category: { type: 'string', description: 'Filtr kategorie' },
-                    tag: { type: 'string', description: 'Filtr tagu' }
-                  }
-                }
-              },
-              {
-                name: 'get_tool',
-                description: 'Ziskat detail nastroje',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    id: { type: 'string', description: 'ID nastroje' }
-                  },
-                  required: ['id']
-                }
-              },
-              {
-                name: 'create_tool',
-                description: 'Vytvorit novy nastroj',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    name: { type: 'string', description: 'Nazev nastroje' },
-                    description: { type: 'string', description: 'Popis' },
-                    categories: { type: 'array', items: { type: 'string' } },
-                    tags: { type: 'array', items: { type: 'string' } },
-                    pricing_model: { type: 'string' }
-                  },
-                  required: ['name']
-                }
-              },
-              {
-                name: 'search_tools_mcp',
-                description: 'MCP-native search tools',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    query: { type: 'string' }
-                  }
-                }
-              }
-            ]
-          },
+          result: { tools: TOOLS },
           id
         };
         break;
 
-      // ─── Call a tool ─────────────────────────────────
-      case 'tools/call':
+      case 'tools/call': {
         const toolName = params?.name;
         const toolArgs = params?.arguments || {};
 
-        console.error('[ToolSage MCP] Calling tool:', toolName, JSON.stringify(toolArgs));
+        console.error(`[ToolSage MCP] Calling tool: ${toolName}`, JSON.stringify(toolArgs));
 
-        // Map MCP tool names to ToolSage MCP methods
-        let mcpMethod, mcpParams;
-        switch (toolName) {
-          case 'search_tools':
-          case 'search_tools_mcp':
-            mcpMethod = 'Tool.search';
-            mcpParams = toolArgs;
-            break;
-          case 'get_tool':
-            mcpMethod = 'Tool.get';
-            mcpParams = { id: toolArgs.id };
-            break;
-          case 'create_tool':
-            mcpMethod = 'Tool.create';
-            mcpParams = { tool: toolArgs };
-            break;
-          default:
-            response = {
-              jsonrpc: '2.0',
-              error: { code: -32601, message: `Neznama metoda: ${toolName}` },
-              id
-            };
-            break;
+        const mcpMethod = TOOL_METHOD_MAP[toolName];
+
+        if (!mcpMethod) {
+          response = {
+            jsonrpc: '2.0',
+            error: { code: -32601, message: `Neznámý nástroj: ${toolName}. Dostupné: ${TOOLS.map(t => t.name).join(', ')}` },
+            id
+          };
+          break;
         }
 
-        if (mcpMethod) {
-          try {
-            const mcpResult = await callMCP(mcpMethod, mcpParams);
-            if (mcpResult.error) {
-              response = { jsonrpc: '2.0', error: mcpResult.error, id };
-            } else {
-              response = {
-                jsonrpc: '2.0',
-                result: {
-                  content: [{
-                    type: 'text',
-                    text: JSON.stringify(mcpResult.result || mcpResult, null, 2)
-                  }]
-                },
-                id
-              };
-            }
-          } catch (err) {
+        try {
+          const mcpResult = await callMCP(mcpMethod, toolArgs);
+
+          if (mcpResult.error) {
+            response = { jsonrpc: '2.0', error: mcpResult.error, id };
+          } else {
+            const resultText = JSON.stringify(mcpResult.result || mcpResult, null, 2);
             response = {
               jsonrpc: '2.0',
-              error: { code: -32000, message: `ToolSage error: ${err.message}` },
+              result: {
+                content: [{ type: 'text', text: resultText }]
+              },
               id
             };
           }
+        } catch (err) {
+          response = {
+            jsonrpc: '2.0',
+            error: { code: -32000, message: `ToolSage error: ${err.message}` },
+            id
+          };
         }
         break;
+      }
 
-      // ─── Default ─────────────────────────────────────
       default:
         response = {
           jsonrpc: '2.0',
-          error: { code: -32601, message: `Neznama metoda: ${method}` },
+          error: { code: -32601, message: `Neznámá metoda: ${method}` },
           id
         };
     }
@@ -268,5 +294,4 @@ rl.on('close', () => {
   process.exit(0);
 });
 
-// Keep process alive
 process.stdin.resume();

@@ -1,11 +1,37 @@
-# ToolSage Backend - Supabase SQL setup
-# 1. Jdi na https://supabase.com
-# 2. Vytvor projekt (free tier, 2 min)
-# 3. Otevri SQL Editor
-# 4. Zkopiruj cely tento soubor a spust
+-- ToolSage Backend - Supabase SQL setup (v2 s AI agenty)
+-- Spust v SQL Editoru na Supabase
 
 -- =============================================
--- TABULKY
+-- DOPLNĚNÍ PRO AGENT SYSTEM
+-- =============================================
+
+-- Rozšíření tabulky agents o nové sloupce
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '[]';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS webhook_url TEXT DEFAULT '';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS rate_limit INT DEFAULT 100;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS created_by TEXT DEFAULT 'app';
+
+-- Tabulka pro logování aktivity agentů
+CREATE TABLE IF NOT EXISTS agent_activity_log (
+  id SERIAL PRIMARY KEY,
+  agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+  agent_name TEXT DEFAULT 'unknown',
+  action TEXT NOT NULL, -- 'create_tool', 'update_tool', 'delete_tool', 'read_tool', 'list_tools', 'api_call'
+  resource_type TEXT DEFAULT 'tool', -- 'tool', 'category', 'agent', 'system'
+  resource_id TEXT DEFAULT '',
+  details JSONB DEFAULT '{}',
+  ip_address TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Index pro rychlé dotazování aktivity
+CREATE INDEX IF NOT EXISTS idx_agent_activity_agent ON agent_activity_log(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_time ON agent_activity_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_action ON agent_activity_log(action);
+
+-- =============================================
+-- TABULKY (původní - pokud neexistují)
 -- =============================================
 
 CREATE TABLE IF NOT EXISTS categories (
@@ -27,23 +53,15 @@ CREATE TABLE IF NOT EXISTS tools (
   "averageRating" REAL DEFAULT 0,
   "reviewCount" INT DEFAULT 0,
   "createdAt" TIMESTAMPTZ DEFAULT NOW(),
-  "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+  "updatedAt" TIMESTAMPTZ DEFAULT NOW(),
+  "createdBy" TEXT DEFAULT '',       -- agent_id nebo 'app'
+  "createdByName" TEXT DEFAULT ''     -- jméno agenta nebo 'app'
 );
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT,
   email TEXT,
-  "createdAt" TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS agents (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT DEFAULT '',
-  permissions TEXT[] DEFAULT '{}',
-  api_key TEXT UNIQUE,
-  active BOOLEAN DEFAULT true,
   "createdAt" TIMESTAMPTZ DEFAULT NOW()
 );
 

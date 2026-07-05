@@ -19,7 +19,7 @@ object HttpClient {
     // EMULÁTOR:  http://10.0.2.2:3001/
     // FYZICKÉ:   http://192.168.x.x:3001/
     // PRODUKCE:  https://toolsage-backend.onrender.com/
-    private const val BASE_URL = "https://toolsage-backend.onrender.com/"
+    const val BASE_URL = "https://toolsage-backend.onrender.com/"
     // ───────────────────────────────────────────────────
     private const val TIMEOUT_SECONDS = 30L
 

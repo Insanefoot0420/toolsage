@@ -7,6 +7,7 @@ const express = require('express')
 const cors = require('cors')
 
 const toolsRouter = require('./routes/tools')
+const toolsExportRouter = require('./routes/tools-export')
 const aiRouter = require('./routes/ai')
 const agentsRouter = require('./routes/agents')
 const categoriesRouter = require('./routes/categories')
@@ -30,6 +31,7 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/tools', toolsRouter)
+app.use('/tools', toolsExportRouter)
 app.use('/ai', aiRouter)
 app.use('/agents', agentsRouter)
 app.use('/categories', categoriesRouter)

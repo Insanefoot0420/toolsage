@@ -128,7 +128,7 @@ class ToolRepository {
         try {
             val response = api.getCategories()
             if (response.isSuccessful && response.body() != null) {
-                Result.success(response.body()!!)
+                Result.success(response.body()!!.map { it.name })
             } else {
                 Result.success(listOf(
                     "Vývoj", "AI/ML", "Design", "DevOps", "Backend", "Frontend",

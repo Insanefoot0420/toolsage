@@ -19,6 +19,7 @@ import com.toolsage.ui.viewmodel.ToolSageViewModel
 fun ProfileScreen(
     onNavigateToSettings: () -> Unit = {},
     onNavigateToAgentManager: () -> Unit = {},
+    onNavigateToCategoryManager: () -> Unit = {},
     viewModel: ToolSageViewModel = viewModel()
 ) {
     val tools by viewModel.tools.collectAsStateWithLifecycle()
@@ -108,6 +109,14 @@ fun ProfileScreen(
                     icon = { Icon(Icons.Filled.Android, null) },
                     label = { Text("Správa AI agentů") }, selected = false,
                     onClick = onNavigateToAgentManager, modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item { HorizontalDivider() }
+            item {
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Filled.Category, null) },
+                    label = { Text("Správa kategorií") }, selected = false,
+                    onClick = onNavigateToCategoryManager, modifier = Modifier.fillMaxWidth()
                 )
             }
             item { HorizontalDivider() }

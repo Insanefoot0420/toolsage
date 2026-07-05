@@ -107,7 +107,8 @@ fun ToolSageMainScreen() {
                 ProfileScreen(
                     viewModel = viewModel,
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
-                    onNavigateToAgentManager = { navController.navigate(Screen.AgentManager.route) }
+                    onNavigateToAgentManager = { navController.navigate(Screen.AgentManager.route) },
+                    onNavigateToCategoryManager = { navController.navigate(Screen.CategoryManager.route) }
                 )
             }
 
@@ -162,11 +163,18 @@ fun ToolSageMainScreen() {
 
             // Settings and Agent manager
             composable(Screen.Settings.route) {
-                SettingsScreen(onNavigateBack = { navController.popBackStack() })
+                SettingsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onOpenAgentHub = { navController.navigate(Screen.AgentManager.route) }
+                )
             }
 
             composable(Screen.AgentManager.route) {
                 AgentManagerScreen(onNavigateBack = { navController.popBackStack() })
+            }
+
+            composable(Screen.CategoryManager.route) {
+                CategoryManagementScreen(onNavigateBack = { navController.popBackStack() })
             }
         }
     }

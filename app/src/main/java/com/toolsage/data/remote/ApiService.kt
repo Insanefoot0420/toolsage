@@ -51,27 +51,102 @@ interface ApiService {
     @GET("users/{id}")
     suspend fun getUser(@Path("id") id: String): Response<User>
 
-    // ─── Agents ─────────────────────────────────────────────────────
+    // ─── Agents (Agent Hub) ──────────────────────────────────────────
+
+    @GET("agents")
+    suspend fun getAgents(): Response<AgentListResponse>
 
     @GET("agents/{id}")
     suspend fun getAgent(@Path("id") id: String): Response<Agent>
 
     @POST("agents")
-    suspend fun createAgent(@Body agent: Agent): Response<Agent>
+    suspend fun createAgent(@Body request: CreateAgentRequest): Response<Agent>
+
+    @PUT("agents/{id}")
+    suspend fun updateAgent(@Path("id") id: String, @Body body: Map<String, @JvmSuppressWildcards Any>): Response<Agent>
 
     @DELETE("agents/{id}")
     suspend fun deleteAgent(@Path("id") id: String): Response<Unit>
 
-    @POST("agents/{id}/generate-api-key")
-    suspend fun generateApiKey(@Path("id") id: String): Response<Map<String, String>>
+    @POST("agents/{id}/generate-key")
+    suspend fun generateAgentKey(@Path("id") id: String): Response<ApiKeyResponse>
 
-    @DELETE("agents/{id}/revoke-api-key")
-    suspend fun revokeApiKey(@Path("id") id: String): Response<Unit>
+    @DELETE("agents/{id}/revoke-key")
+    suspend fun revokeAgentKey(@Path("id") id: String): Response<Unit>
 
-    // ─── Categories ─────────────────────────────────────────────────
+    @PUT("agents/{id}/permissions")
+    suspend fun updateAgentPermissions(
+        @Path("id") id: String,
+        @Body body: Map<String, @JvmSuppressWildcards Any>
+    ): Response<Agent>
+
+    @PUT("agents/{id}/webhook")
+    suspend fun updateAgentWebhook(
+        @Path("id") id: String,
+        @Body body: Map<String, String>
+    ): Response<Agent>
+
+    // Agent activity
+
+    @GET("agents/activity")
+    suspend fun getAgentActivity(
+        @Query("limit") limit: Int = 30,
+        @Query("agent_id") agentId: String? = null
+    ): Response<AgentActivityResponse>
+
+    @GET("agents/{id}/activity")
+    suspend fun getAgentDetailActivity(
+        @Path("id") id: String,
+        @Query("limit") limit: Int = 20
+    ): Response<AgentActivityResponse>
+
+    // ─── Categories (full CRUD) ─────────────────────────────────────
 
     @GET("categories")
-    suspend fun getCategories(): Response<List<String>>
+    suspend fun getCategories(): Response<List<Category>>
+
+    @GET("categories/simple")
+    suspend fun getCategoryNames(): Response<List<String>>
+
+    @POST("categories")
+    suspend fun createCategory(@Body request: CreateCategoryRequest): Response<Category>
+
+    @PUT("categories/{name}")
+    suspend fun updateCategory(
+        @Path("name") name: String,
+        @Body body: Map<String, @JvmSuppressWildcards Any>
+    ): Response<Category>
+
+    @DELETE("categories/{name}")
+    suspend fun deleteCategory(
+        @Path("name") name: String,
+        @Query("reassign_to") reassignTo: String? = null
+    ): Response<Unit>
+
+    @PUT("categories/reorder")
+    suspend fun reorderCategories(@Body body: ReorderCategoriesRequest): Response<List<Category>>
+
+    // ─── Tool Export ────────────────────────────────────────────────
+
+    @GET("tools/{id}/export")
+    @Streaming
+    suspend fun exportTool(
+        @Path("id") id: String,
+        @Query("format") format: String = "txt"
+    ): Response<okhttp3.ResponseBody>
+
+    // ─── Send Tool to Agent ─────────────────────────────────────────
+
+    @POST("tools/{id}/send-to-agent")
+    suspend fun sendToolToAgent(
+        @Path("id") id: String,
+        @Body request: SendToAgentRequest
+    ): Response<SendToAgentResponse>
+
+    // ─── AI Lookup ──────────────────────────────────────────────────
+
+    @POST("ai/lookup-tool")
+    suspend fun lookupTool(@Body request: ToolLookupRequest): Response<ToolLookupResponse>
 }
 
 /**

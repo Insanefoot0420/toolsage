@@ -98,25 +98,78 @@ data class User(
 )
 
 /**
- * Agent permission model
+ * Agent permission model - defines what resources an agent can access
+ * and what actions they can perform.
  */
 data class Permission(
-    val resource: String = "",     // "tools"
-    val actions: List<String> = emptyList()  // "read", "create", "update", "delete"
+    val resource: String = "",     // "tools", "*"
+    val actions: List<String> = emptyList()  // "read", "create", "update", "delete", "*"
 )
 
 /**
- * AI Agent model matching Firestore agents collection
+ * AI Agent model - matches the backend agents table
  */
 data class Agent(
     val id: String = "",
     val name: String = "",
     val description: String = "",
-    val apiKeyHash: String = "",
-    val permissions: List<Permission> = emptyList(),
-    val createdBy: String = "",
-    val createdAt: String = "",
-    val lastActivityAt: String = ""
+    val api_key: String? = null,            // partial display or full on creation
+    val permissions: List<Permission> = listOf(Permission("tools", listOf("read"))),
+    val active: Boolean = true,
+    val webhook_url: String = "",
+    val rate_limit: Int = 100,
+    val created_by: String = "",
+    val created_at: String = "",
+    val last_activity_at: String = ""
+)
+
+/**
+ * Agent creation request body
+ */
+data class CreateAgentRequest(
+    val name: String,
+    val description: String = "",
+    val permissions: List<Permission> = listOf(Permission("tools", listOf("read"))),
+    val webhook_url: String = "",
+    val rate_limit: Int = 100
+)
+
+/**
+ * Agent list response from backend
+ */
+data class AgentListResponse(
+    val agents: List<Agent> = emptyList(),
+    val total: Int = 0
+)
+
+/**
+ * Agent activity log entry
+ */
+data class AgentActivity(
+    val id: Int = 0,
+    val agent_id: String = "",
+    val agent_name: String = "",
+    val action: String = "",
+    val resource_type: String = "",
+    val resource_id: String = "",
+    val details: Map<String, Any>? = emptyMap(),
+    val ip_address: String = "",
+    val created_at: String = ""
+)
+
+/**
+ * Agent activity list response
+ */
+data class AgentActivityResponse(
+    val activity: List<AgentActivity> = emptyList(),
+    val total: Int = 0
+)
+
+/**
+ * API key response from generate-key endpoint
+ */
+data class ApiKeyResponse(
+    val api_key: String = ""
 )
 
 /**
@@ -133,6 +186,82 @@ data class SmartImportRequest(
  */
 data class SmartImportResponse(
     val suggestions: List<ImportedToolSuggestion> = emptyList()
+)
+
+// ═══════════════════════════════════════════════════════════════
+// CATEGORY MODELS
+// ═══════════════════════════════════════════════════════════════
+
+data class Category(
+    val name: String = "",
+    val icon: String = "📁",
+    val sort_order: Int = 0
+)
+
+data class CreateCategoryRequest(
+    val name: String,
+    val icon: String = "📁"
+)
+
+data class UpdateCategoryRequest(
+    val name: String? = null,
+    val icon: String? = null,
+    val sort_order: Int? = null
+)
+
+data class ReorderCategoriesRequest(
+    val order: List<String>
+)
+
+// ═══════════════════════════════════════════════════════════════
+// EXPORT & SEND MODELS
+// ═══════════════════════════════════════════════════════════════
+
+data class SendToAgentRequest(
+    val agent_id: String,
+    val message: String = ""
+)
+
+data class SendToAgentResponse(
+    val success: Boolean = false,
+    val delivery: DeliveryInfo? = null,
+    val toolCard: ToolCardInfo? = null,
+    val note: String = ""
+)
+
+data class DeliveryInfo(
+    val method: String = "",
+    val success: Boolean = false,
+    val error: String? = null,
+    val statusCode: Int? = null
+)
+
+data class ToolCardInfo(
+    val id: String = "",
+    val name: String = "",
+    val sentTo: String = ""
+)
+
+// ═══════════════════════════════════════════════════════════════
+// AI LOOKUP MODELS
+// ═══════════════════════════════════════════════════════════════
+
+data class ToolLookupRequest(
+    val name: String,
+    val url: String = ""
+)
+
+data class ToolLookupResponse(
+    val found: Boolean = false,
+    val name: String = "",
+    val description: String = "",
+    val categories: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val pricingModel: String = "",
+    val website: String = "",
+    val github: String = "",
+    val confidence: Double = 0.0,
+    val source: String = "" // "database", "web", "ai"
 )
 
 data class ImportedToolSuggestion(
