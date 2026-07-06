@@ -45,8 +45,8 @@ router.post('/chat', async (req, res) => {
 
     // ─── Log to chat_history ───────────────────────────────────
     try {
-      await supabase.from('chat_history').insert({ role: 'user', content: message }).maybeSingle()
-      await supabase.from('chat_history').insert({ role: 'assistant', content: result.reply }).maybeSingle()
+      await db().from('chat_history').insert({ role: 'user', content: message }).maybeSingle()
+      await db().from('chat_history').insert({ role: 'assistant', content: result.reply }).maybeSingle()
     } catch (_) { }
 
     res.json({
@@ -204,9 +204,12 @@ async function generateAIResponse(query) {
   }
 }
 
-// ─── Vyhledávání v Supabase ─────────────────────────────────────
+// ─── Vyhledávání v Supabase (použij service_role pokud je k dispozici) ──
+const db = () => supabaseAdmin || supabase
+
 async function searchToolsInDB(query) {
-  if (!supabase) return []
+  const client = db()
+  if (!client) return []
   try {
     const words = query.split(/\s+/).filter(w => w.length > 2)
     if (words.length === 0) return []
@@ -215,7 +218,7 @@ async function searchToolsInDB(query) {
     const conditions = words.map(w => `name.ilike.%${w}%,description.ilike.%${w}%`).join(',')
     const tagConditions = words.map(w => `tags.cs.{${w}}`).join(',')
 
-    const { data } = await supabase
+    const { data } = await client
       .from('tools')
       .select('id, name, description, categories, tags, "pricingModel", "averageRating", "reviewCount"')
       .or(conditions)
@@ -230,19 +233,25 @@ async function searchToolsInDB(query) {
 
 // ─── Získání statistik ──────────────────────────────────────────
 async function getDBStats() {
-  if (!supabase) return { toolCount: 0, categoryCount: 0 }
+  const client = db()
+  if (!client) return { toolCount: 0, categoryCount: 0 }
   try {
-    const { count: toolCount } = await supabase.from('tools').select('*', { count: 'exact', head: true })
-    const { data: cats } = await supabase.from('categories').select('name')
+    const { count: toolCount } = await client.from('tools').select('*', { count: 'exact', head: true })
+    const { data: cats } = await client.from('categories').select('name')
     return { toolCount: toolCount || 0, categoryCount: cats?.length || 0 }
-  } catch { return { toolCount: 0, categoryCount: 0 } }
+  } catch { 
+    console.error('[AI] getDBStats error, falling back to demo')
+    // Fallback: počítáme z demo dat
+    return { toolCount: 10, categoryCount: 10 }
+  }
 }
 
 // ─── Poslední nástroje ──────────────────────────────────────────
 async function getRecentTools(limit = 5) {
-  if (!supabase) return []
+  const client = db()
+  if (!client) return []
   try {
-    const { data } = await supabase.from('tools').select('id, name, description').order('created_at', { ascending: false }).limit(limit)
+    const { data } = await client.from('tools').select('id, name, description').order('"createdAt"', { ascending: false }).limit(limit)
     return data || []
   } catch { return [] }
 }
@@ -503,8 +512,9 @@ router.post('/lookup-tool', async (req, res) => {
     }
 
     // 1. Hledej v lokální databázi
-    if (supabase) {
-      const { data: dbResults } = await supabase
+    const dbClient = db()
+    if (dbClient) {
+      const { data: dbResults } = await dbClient
         .from('tools')
         .select('id, name, description, categories, tags, "pricingModel", compatibility, "averageRating", "reviewCount", "setupGuides"')
         .or(`name.ilike.%${toolName}%,description.ilike.%${toolName}%`)
