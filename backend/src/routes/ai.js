@@ -2,58 +2,195 @@ const express = require('express')
 const router = express.Router()
 const { supabase, supabaseAdmin } = require('../db')
 
+// ═══════════════════════════════════════════════════════════════
+// LLM providers (OpenRouter → DeepSeek → Gemini)
+// ═══════════════════════════════════════════════════════════════
+
+async function callOpenRouter(messages, systemPrompt) {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) return null
+  try {
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://toolsage-backend.onrender.com',
+        'X-Title': 'ToolSage'
+      },
+      body: JSON.stringify({
+        model: 'deepseek/deepseek-chat',
+        messages: [
+          { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
+          ...messages
+        ],
+        max_tokens: 2048,
+        temperature: 0.7
+      })
+    })
+    if (!resp.ok) { console.warn('[LLM] OpenRouter:', resp.status); return null }
+    const data = await resp.json()
+    return data.choices?.[0]?.message?.content || null
+  } catch (e) { console.warn('[LLM] OpenRouter error:', e.message); return null }
+}
+
+async function callDeepSeek(messages, systemPrompt) {
+  const apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey) return null
+  try {
+    const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
+          ...messages
+        ],
+        max_tokens: 2048,
+        temperature: 0.7
+      })
+    })
+    if (!resp.ok) { console.warn('[LLM] DeepSeek:', resp.status); return null }
+    const data = await resp.json()
+    return data.choices?.[0]?.message?.content || null
+  } catch (e) { console.warn('[LLM] DeepSeek error:', e.message); return null }
+}
+
+async function callGemini(messages, systemPrompt) {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) return null
+  try {
+    const conversationText = messages.map(m => `${m.role}: ${m.content}`).join('\n')
+    const prompt = systemPrompt ? `${systemPrompt}\n\n${conversationText}` : conversationText
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+      })
+    })
+    if (!resp.ok) { console.warn('[LLM] Gemini:', resp.status); return null }
+    const data = await resp.json()
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || null
+  } catch (e) { console.warn('[LLM] Gemini error:', e.message); return null }
+}
+
+async function callLLM(messages, systemPrompt) {
+  let result = await callOpenRouter(messages, systemPrompt)
+  if (result) return result
+  result = await callDeepSeek(messages, systemPrompt)
+  if (result) return result
+  result = await callGemini(messages, systemPrompt)
+  return result
+}
+
+// ─── Build system prompt s kontextem databáze ──────────────────
+async function buildSystemPrompt() {
+  const client = supabaseAdmin || supabase
+  let tools = []
+  try {
+    const { data } = await client.from('tools').select('name, description, categories, "pricingModel"').limit(50)
+    tools = data || []
+  } catch (_) { }
+  const toolList = tools.map(t =>
+    `- ${t.name}: ${(t.description || '').substring(0, 120)} [${(t.categories || []).join(', ')}] [${t.pricingModel || '?'}]`
+  ).join('\n')
+  return `Jsi AI asistent ToolSage — databáze vývojářských nástrojů. Komunikuješ v češtině.
+
+Máš k dispozici tyto nástroje v databázi:
+${toolList || '(databáze zatím neobsahuje žádné nástroje)'}
+
+Tvé schopnosti:
+1. Odpovídat na otázky, konverzovat, pomáhat s vývojem
+2. Doporučovat nástroje z databáze podle potřeb uživatele
+3. Pokud uživatel řekne "přidej NÁZEV" — odpověz přesně: [ADD]NÁZEV|popis|kategorie|cena
+4. Pokud uživatel řekne "smaž NÁZEV" — odpověz přesně: [DELETE]NÁZEV
+5. Pokud chce najít něco co není v DB, řekni to a navrhni přidání
+
+Jsi přátelský, užitečný a vždy v češtině.`
+}
+
 // POST /ai/chat - AI chat
 router.post('/chat', async (req, res) => {
   try {
     const { message, conversationHistory } = req.body
+    if (!message) return res.status(400).json({ error: 'Message is required' })
 
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' })
-    }
+    // ─── LLM first ─────────────────────────────────────────────
+    const systemPrompt = await buildSystemPrompt()
+    const history = (conversationHistory || []).slice(-10) // posledních 10 zpráv
+    const llmMessages = [
+      ...history.map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: message }
+    ]
+    let llmReply = await callLLM(llmMessages, systemPrompt)
 
-    // ─── AI response logic ─────────────────────────────────────
-    const result = await generateAIResponse(message)
+    // ─── Parse LLM action (add/delete tool) ────────────────────
+    let createdTool = null
+    let suggestedTools = []
 
-    // ─── Pokud AI chtěl vytvořit nástroj ────────────────────────
-    if (result.action === 'create_tool' && result.toolData) {
-      try {
-        const client = supabaseAdmin || supabase
-        const { data: newTool, error: createError } = await client
-          .from('tools')
-          .insert({
-            name: result.toolData.name,
-            description: result.toolData.description || '',
-            categories: result.toolData.categories || [],
-            tags: result.toolData.tags || [],
-            pricingModel: result.toolData.pricingModel || 'free',
-            compatibility: result.toolData.compatibility || { os: [], platforms: [] },
-            setupGuides: result.toolData.setupGuides || ''
-          })
-          .select()
-          .single()
+    if (llmReply) {
+      const addMatch = llmReply.match(/\[ADD\](\S[^|]*)\|([^|]*)\|([^|]*)\|([^\]]*)/)
+      const deleteMatch = llmReply.match(/\[DELETE\](\S[^|]*)/)
 
-        if (!createError && newTool) {
-          result.reply = `✅ **Nástroj "${newTool.name}" byl úspěšně přidán do databáze!**\n\n${result.reply}`
-          result.createdTool = { id: newTool.id, name: newTool.name }
-        } else {
-          result.reply = `❌ Nástroj se nepodařilo vytvořit: ${createError?.message || 'neznámá chyba'}\n\n${result.reply}`
+      if (addMatch) {
+        const name = addMatch[1].trim()
+        const desc = addMatch[2].trim()
+        const cats = addMatch[3].split(',').map(s => s.trim()).filter(Boolean)
+        const pricing = addMatch[4].trim() || 'free'
+        try {
+          const client = supabaseAdmin || supabase
+          const { data: newTool, error: createError } = await client
+            .from('tools')
+            .insert({ name, description: desc, categories: cats.length > 0 ? cats : ['Ostatní'], pricingModel: pricing })
+            .select().single()
+          if (!createError && newTool) {
+            llmReply = `✅ **"${newTool.name}"** přidán do databáze!\n\n${llmReply.replace(/\[ADD\].*/, '').trim()}`
+            createdTool = { id: newTool.id, name: newTool.name }
+          }
+        } catch (e) {
+          llmReply = `❌ Chyba při přidávání: ${e.message}\n\n${llmReply}`
         }
-      } catch (createErr) {
-        result.reply = `❌ Chyba při vytváření nástroje: ${createErr.message}\n\n${result.reply}`
+      } else if (deleteMatch) {
+        const name = deleteMatch[1].trim()
+        try {
+          const client = supabaseAdmin || supabase
+          const { data: found } = await client.from('tools').select('id').ilike('name', `%${name}%`).limit(1)
+          if (found && found.length > 0) {
+            await client.from('tools').delete().eq('id', found[0].id)
+            llmReply = `✅ **"${found[0].id}"** smazán z databáze.\n\n${llmReply.replace(/\[DELETE\].*/, '').trim()}`
+          }
+        } catch (e) {
+          llmReply = `❌ Chyba při mazání: ${e.message}\n\n${llmReply}`
+        }
       }
+
+      // Extract suggested tool names from LLM response
+      const allTools = await getAllTools()
+      suggestedTools = allTools
+        .filter(t => llmReply.toLowerCase().includes(t.name.toLowerCase().substring(0, 20)))
+        .map(t => t.id)
+        .slice(0, 5)
     }
 
-    // ─── Log to chat_history ───────────────────────────────────
+    // ─── Fallback: pattern matching ────────────────────────────
+    if (!llmReply) {
+      const result = await generateFallbackResponse(message)
+      llmReply = result.reply
+      suggestedTools = result.suggestedTools || []
+    }
+
+    // ─── Log ───────────────────────────────────────────────────
     try {
-      await db().from('chat_history').insert({ role: 'user', content: message }).maybeSingle()
-      await db().from('chat_history').insert({ role: 'assistant', content: result.reply }).maybeSingle()
+      const logClient = supabaseAdmin || supabase
+      await logClient.from('chat_history').insert({ role: 'user', content: message }).maybeSingle()
+      await logClient.from('chat_history').insert({ role: 'assistant', content: llmReply }).maybeSingle()
     } catch (_) { }
 
-    res.json({
-      reply: result.reply,
-      suggestedTools: result.suggestedTools || [],
-      createdTool: result.createdTool || null
-    })
+    res.json({ reply: llmReply, suggestedTools, createdTool })
   } catch (err) {
     console.error('AI chat error:', err.message)
     res.json({
@@ -63,8 +200,16 @@ router.post('/chat', async (req, res) => {
   }
 })
 
-// ─── Hlavní AI logika (databázová, ne hardcodovaná) ────────────
-async function generateAIResponse(query) {
+async function getAllTools() {
+  const client = supabaseAdmin || supabase
+  try {
+    const { data } = await client.from('tools').select('id, name, description, categories, "pricingModel"').limit(100)
+    return data || []
+  } catch { return [] }
+}
+
+// ─── Fallback: pattern matching (původní logika) ───────────────
+async function generateFallbackResponse(query) {
   const q = query.toLowerCase().trim()
 
   // ─── Příkaz: přidej nástroj ─────────────────────────────────
