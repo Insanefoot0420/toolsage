@@ -147,7 +147,17 @@ interface ApiService {
 
     @POST("ai/lookup-tool")
     suspend fun lookupTool(@Body request: ToolLookupRequest): Response<ToolLookupResponse>
+
+    // ─── Web Search ──────────────────────────────────────────────────
+
+    @POST("ai/search")
+    suspend fun searchWeb(@Body request: WebSearchRequest): Response<WebSearchResponse>
 }
+
+data class WebSearchRequest(
+    val query: String,
+    val limit: Int = 10
+)
 
 /**
  * Request body for AI chat endpoint

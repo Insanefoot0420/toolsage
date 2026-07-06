@@ -256,7 +256,151 @@ async function getRecentTools(limit = 5) {
   } catch { return [] }
 }
 
-// ─── Vyhledávání nástrojů na webu (SerpAPI/Brave/fallback) ────
+// ═══════════════════════════════════════════════════════════════
+// POST /ai/search - Multi-result web search for tools
+// ═══════════════════════════════════════════════════════════════
+
+router.post('/search', async (req, res) => {
+  try {
+    const { query, limit = 10 } = req.body
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({ error: 'Query is required' })
+    }
+
+    const results = await webSearchTools(query.trim(), query.trim(), parseInt(limit))
+    const dbResults = await searchToolsInDB(query.trim())
+
+    // Mark which tools already exist in DB
+    const enriched = results.map(r => ({
+      ...r,
+      inDatabase: dbResults.some(d =>
+        d.name.toLowerCase().includes(r.name.toLowerCase().substring(0, 20)) ||
+        r.name.toLowerCase().includes(d.name.toLowerCase().substring(0, 20))
+      )
+    }))
+
+    res.json({ results: enriched, total: enriched.length, query: query.trim() })
+  } catch (err) {
+    console.error('[AISearch] Error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Multi-result web search (returns array) ──────────────────
+async function webSearchTools(toolName, fullQuery, maxResults = 10) {
+  const braveKey = process.env.BRAVE_API_KEY
+  const serpKey = process.env.SERPAPI_KEY
+  const allResults = []
+  const seen = new Set()
+
+  function dedupAndPush(name, desc, website, github, pricingModel, categories, source) {
+    const key = (name + website).toLowerCase().replace(/\s/g, '')
+    if (seen.has(key) || !name) return
+    seen.add(key)
+    allResults.push({
+      name: name.substring(0, 200),
+      description: (desc || '').substring(0, 500),
+      website: website || '',
+      github: github || '',
+      pricingModel: pricingModel || '',
+      categories: categories.length > 0 ? categories : ['Ostatní'],
+      source: source || 'unknown'
+    })
+  }
+
+  // Brave Search
+  if (braveKey) {
+    try {
+      const https = require('https')
+      const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
+      const data = await new Promise((resolve, reject) => {
+        const req = https.get(`https://api.search.brave.com/res/v1/web/search?q=${q}&count=${Math.min(maxResults, 10)}`, {
+          timeout: 6000,
+          headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey }
+        }, (res) => {
+          let body = ''
+          res.on('data', chunk => { body += chunk.toString() })
+          res.on('end', () => resolve(body))
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      })
+      const json = JSON.parse(data)
+      const braveResults = json.web?.results || []
+      braveResults.forEach(r => {
+        dedupAndPush(r.title, r.description || r.snippet, r.url, extractGithub(r.url, r.description || ''), detectPricing(r.title + ' ' + (r.description || '')), classifyToolCategory(r.title + ' ' + (r.description || '')), 'brave')
+      })
+    } catch (e) { console.warn('[WebSearch] Brave error:', e.message) }
+  }
+
+  // SerpAPI
+  if (serpKey && allResults.length < maxResults) {
+    try {
+      const https = require('https')
+      const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
+      const data = await new Promise((resolve, reject) => {
+        https.get(`https://serpapi.com/search.json?q=${q}&api_key=${serpKey}&num=${Math.min(maxResults, 10)}`, { timeout: 6000 }, (res) => {
+          let body = ''
+          res.on('data', chunk => { body += chunk.toString() })
+          res.on('end', () => resolve(body))
+        }).on('error', reject)
+      })
+      const json = JSON.parse(data)
+      const serpResults = json.organic_results || []
+      serpResults.forEach(r => {
+        dedupAndPush(r.title, r.snippet || '', r.link || '', extractGithub(r.link, r.snippet || ''), detectPricing(r.title + ' ' + (r.snippet || '')), classifyToolCategory(r.title + ' ' + (r.snippet || '')), 'serpapi')
+      })
+    } catch (e) { console.warn('[WebSearch] SerpAPI error:', e.message) }
+  }
+
+  // DuckDuckGo
+  if (allResults.length < maxResults) {
+    try {
+      const https = require('https')
+      const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
+      const html = await new Promise((resolve, reject) => {
+        const req = https.get(`https://html.duckduckgo.com/html/?q=${q}`, {
+          timeout: 8000,
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'text/html' }
+        }, (res) => {
+          let data = ''
+          res.on('data', chunk => { data += chunk.toString() })
+          res.on('end', () => resolve(data))
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      })
+      const ddgRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+      let match
+      while ((match = ddgRegex.exec(html)) !== null && allResults.length < maxResults) {
+        const snippetMatch = html.substring(match.index).match(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i)
+        const title = match[2].replace(/<[^>]*>/g, '').trim()
+        const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, '').trim() : ''
+        dedupAndPush(title, snippet, match[1], extractGithub(match[1], snippet), detectPricing(title + ' ' + snippet), classifyToolCategory(title + ' ' + snippet), 'duckduckgo')
+      }
+      // Fallback parsing
+      if (allResults.length === 0) {
+        const simplerRegex = /<a[^>]*class="result_[^"]*"[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+        while ((match = simplerRegex.exec(html)) !== null && allResults.length < maxResults) {
+          const title = match[2].replace(/<[^>]*>/g, '').trim()
+          dedupAndPush(title, '', match[1], extractGithub(match[1], ''), detectPricing(title), classifyToolCategory(title), 'duckduckgo')
+        }
+      }
+    } catch (e) { console.warn('[WebSearch] DDG error:', e.message) }
+  }
+
+  // AI inference fallback
+  if (allResults.length === 0) {
+    const aiGuess = inferToolInfo(toolName)
+    if (aiGuess) {
+      dedupAndPush(aiGuess.name, aiGuess.description + ' (odhad z názvu)', '', '', aiGuess.pricingModel, aiGuess.categories, 'ai_inference')
+    }
+  }
+
+  return allResults.slice(0, maxResults)
+}
+
+// ─── Vyhledávání nástrojů na webu (původní, single result) ────
 async function webSearchTool(toolName, fullQuery) {
   // Zkusíme Brave Search API (zdarma 2000 dotazů/měsíc)
   // Pokud BRAVE_API_KEY není nastaven, fallback na Google scraping + SerpAPI + DuckDuckGo

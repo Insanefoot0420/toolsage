@@ -269,3 +269,24 @@ data class ImportedToolSuggestion(
     val confidenceScore: Double = 0.0,
     val sourceContext: String = ""
 )
+
+// ═══════════════════════════════════════════════════════════════
+// WEB SEARCH MODELS
+// ═══════════════════════════════════════════════════════════════
+
+data class WebSearchResult(
+    val name: String = "",
+    val description: String = "",
+    val website: String = "",
+    val github: String = "",
+    val pricingModel: String = "",
+    val categories: List<String> = emptyList(),
+    val source: String = "",
+    val inDatabase: Boolean = false
+)
+
+data class WebSearchResponse(
+    val results: List<WebSearchResult> = emptyList(),
+    val total: Int = 0,
+    val query: String = ""
+)

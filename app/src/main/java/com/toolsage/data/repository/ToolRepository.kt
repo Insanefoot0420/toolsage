@@ -123,6 +123,20 @@ class ToolRepository {
         }
     }
 
+    // ─── Web Search ──────────────────────────────────────────
+    suspend fun searchWeb(query: String, limit: Int = 10): Result<List<com.toolsage.data.model.WebSearchResult>> = withContext(Dispatchers.IO) {
+        try {
+            val response = api.searchWeb(com.toolsage.data.remote.WebSearchRequest(query, limit))
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!.results)
+            } else {
+                Result.failure(Exception("Chyba hledání: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     // ─── Categories ───────────────────────────────────────────
     suspend fun getCategories(): Result<List<String>> = withContext(Dispatchers.IO) {
         try {

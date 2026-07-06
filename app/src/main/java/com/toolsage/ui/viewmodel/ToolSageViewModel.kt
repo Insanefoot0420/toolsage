@@ -119,6 +119,13 @@ class ToolSageViewModel : ViewModel() {
         }
     }
 
+    // ─── Web Search state ─────────────────────────────────────
+    private val _webSearchResults = MutableStateFlow<List<com.toolsage.data.model.WebSearchResult>>(emptyList())
+    val webSearchResults: StateFlow<List<com.toolsage.data.model.WebSearchResult>> = _webSearchResults.asStateFlow()
+
+    private val _isSearching = MutableStateFlow(false)
+    val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
+
     // ─── AI Chat ──────────────────────────────────────────────
 
     fun sendAiMessage(text: String) {
@@ -133,26 +140,87 @@ class ToolSageViewModel : ViewModel() {
                     _aiMessages.value = _aiMessages.value + aiMsg
                 }
                 .onFailure {
-                    val errorMsg = com.toolsage.data.remote.ChatMessage(
+                    _aiMessages.value = _aiMessages.value + com.toolsage.data.remote.ChatMessage(
                         "assistant",
-                        "Omlouvám se, momentálně nemám spojení s backendem. Odpovídám offline.\n\n" +
-                        generateOfflineResponse(text)
+                        "❌ Backend není dostupný. Zkontroluj připojení k serveru."
                     )
-                    _aiMessages.value = _aiMessages.value + errorMsg
                 }
             _isAiLoading.value = false
         }
     }
 
-    private fun generateOfflineResponse(query: String): String {
-        val q = query.lowercase()
-        return when {
-            q.contains("doporuč") || q.contains("nejlepší") ->
-                "Na základě databáze mám tyto nástroje:\n" +
-                "1. **Android Studio** - Oficiální IDE pro vývoj Android aplikací ⭐4.5\n" +
-                "2. **Firebase** - Backendová platforma od Googlu ⭐4.2\n" +
-                "3. **Figma** - Nástroj pro UI/UX design ⭐4.6"
-            else -> "Rozumím! Momentálně zpracovávám požadavek. Prosím zkuste to znovu, až bude backend připojený."
+    // ─── Web Search ───────────────────────────────────────────
+
+    fun searchWebTools(query: String) {
+        if (query.isBlank()) return
+        viewModelScope.launch {
+            _isSearching.value = true
+            _error.value = null
+            repository.searchWeb(query)
+                .onSuccess { _webSearchResults.value = it }
+                .onFailure { _error.value = it.message }
+            _isSearching.value = false
+        }
+    }
+
+    fun sendAiMessageWithSearch(text: String) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            _webSearchResults.value = emptyList()
+            _error.value = null
+
+            val userMsg = com.toolsage.data.remote.ChatMessage("user", text)
+            _aiMessages.value = _aiMessages.value + userMsg
+            _isAiLoading.value = true
+            _isSearching.value = true
+
+            launch {
+                repository.aiChat(text, _aiMessages.value)
+                    .onSuccess {
+                        _aiMessages.value = _aiMessages.value + com.toolsage.data.remote.ChatMessage("assistant", it.reply)
+                    }
+                    .onFailure {
+                        _aiMessages.value = _aiMessages.value + com.toolsage.data.remote.ChatMessage(
+                            "assistant", "❌ Backend není dostupný. Zkontroluj připojení k serveru."
+                        )
+                    }
+                _isAiLoading.value = false
+            }
+
+            launch {
+                repository.searchWeb(text)
+                    .onSuccess { results ->
+                        if (results.isNotEmpty()) _webSearchResults.value = results
+                    }
+                    .onFailure { /* tichý fail — chat je hlavní */ }
+                _isSearching.value = false
+            }
+        }
+    }
+
+    fun clearSearchResults() {
+        _webSearchResults.value = emptyList()
+        _error.value = null
+    }
+
+    fun addToolFromWebResult(result: com.toolsage.data.model.WebSearchResult, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val tool = Tool(
+                name = result.name,
+                description = result.description,
+                categories = result.categories,
+                tags = emptyList(),
+                pricingModel = result.pricingModel,
+                status = "published"
+            )
+            repository.createTool(tool)
+                .onSuccess {
+                    loadTools()
+                    onSuccess()
+                }
+                .onFailure { _error.value = it.message }
+            _isLoading.value = false
         }
     }
 
