@@ -73,6 +73,32 @@ CREATE TABLE IF NOT EXISTS chat_history (
 );
 
 -- =============================================
+-- F6: VAULT PRO API KLÍČE
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS tool_secrets (
+  id SERIAL PRIMARY KEY,
+  tool_id TEXT REFERENCES tools(id) ON DELETE CASCADE,
+  key_name TEXT NOT NULL,
+  encrypted_value TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(tool_id, key_name)
+);
+
+-- =============================================
+-- F2: SLEDOVÁNÍ ZMĚN NÁSTROJŮ (WATCH)
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS tool_watches (
+  id SERIAL PRIMARY KEY,
+  tool_id TEXT REFERENCES tools(id) ON DELETE CASCADE,
+  watch_type TEXT DEFAULT 'release',  -- 'release', 'stars', 'price'
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_watches_tool ON tool_watches(tool_id);
+
+-- =============================================
 -- DEFAULT DATA
 -- =============================================
 

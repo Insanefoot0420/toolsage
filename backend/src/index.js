@@ -14,6 +14,8 @@ const categoriesRouter = require('./routes/categories')
 const usersRouter = require('./routes/users')
 const smartImportRouter = require('./routes/smartImport')
 const mcpRouter = require('./routes/mcp')
+const vaultRouter = require('./routes/vault')
+const webhooksRouter = require('./routes/webhooks')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -38,6 +40,9 @@ app.use('/categories', categoriesRouter)
 app.use('/users', usersRouter)
 app.use('/tools/smart-import', smartImportRouter)
 app.use('/mcp', mcpRouter)
+app.use('/tools/:id/secrets', vaultRouter)
+app.use('/webhooks', webhooksRouter)
+app.use('/tools/:id', webhooksRouter) // watch/unwatch routes
 
 // Health check
 app.get('/', (req, res) => {
@@ -52,7 +57,12 @@ app.get('/', (req, res) => {
       smartImport: '/tools/smart-import',
       agents: '/agents',
       users: '/users',
-      mcp: '/mcp'
+      mcp: '/mcp',
+      vault: '/tools/:id/secrets',
+      webhooks: '/webhooks/github',
+      trends: '/ai/chat (napiš "trendy")',
+      compare: '/ai/chat (napiš "porovnej X vs Y")',
+      githubImport: '/ai/chat (pošli GitHub URL s "import")'
     }
   })
 })

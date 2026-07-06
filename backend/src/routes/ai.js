@@ -140,40 +140,65 @@ async function searchWebAndGitHub(query, maxResults = 8) {
 }
 
 // ─── Build system prompt s kontextem databáze ──────────────────
-async function buildSystemPrompt(withSearchContext = null) {
+async function buildSystemPrompt(context = null) {
   const client = supabaseAdmin || supabase
   let tools = []
   try {
-    const { data } = await client.from('tools').select('name, description, categories, "pricingModel"').limit(50)
+    const { data } = await client.from('tools').select('name, description, categories, "pricingModel", github').limit(50)
     tools = data || []
   } catch (_) { }
   const toolList = tools.map(t =>
     `- ${t.name}: ${(t.description || '').substring(0, 120)} [${(t.categories || []).join(', ')}] [${t.pricingModel || '?'}]`
   ).join('\n')
 
-  let searchContext = ''
-  if (withSearchContext && withSearchContext.length > 0) {
-    searchContext = '\n\n📡 **Výsledky z vyhledávání (web + GitHub):**\n' +
-      withSearchContext.map((r, i) =>
+  let extraSections = []
+
+  // Search context
+  if (context?.search?.length > 0) {
+    extraSections.push('📡 **Výsledky z vyhledávání (web + GitHub):**\n' +
+      context.search.map((r, i) =>
         `${i + 1}. **${r.name}** ${r.stars ? '⭐' + r.stars : ''}\n   📝 ${(r.description || '').substring(0, 200)}\n   🌍 ${r.website || ''}${r.github ? ' | 💻 ' + r.github : ''}\n   📂 ${(r.categories || []).join(', ')} | 💰 ${r.pricingModel || '?'}${r.language ? ' | 🔧 ' + r.language : ''}`
-      ).join('\n\n')
+      ).join('\n\n'))
+  }
+
+  // Compare context (F1)
+  if (context?.compare?.length >= 2) {
+    const rows = context.compare.map(c => {
+      const db = c.db?.[0]
+      const gh = c.gh
+      return `- **${c.name}**\n  DB: ${db ? `${db.description?.substring(0, 100)} [${(db.categories || []).join(', ')}]` : 'Nenalezen v DB'}\n  GitHub: ${gh ? `⭐${gh.stars} | 🔧${gh.language || '?'} | 📜${gh.license || '?'} | 🍴${gh.forks || '?'}` : 'Nenalezen na GitHubu'}`
+    }).join('\n')
+    extraSections.push(`🔍 **Srovnání nástrojů:**\n${rows}\n\nPřiprav PřEHLEDNOU srovnávací tabulku s: název, popis, GitHub ⭐, jazyk, licence, kategorie, cena. Použij markdown tabulku. Na konci napiš shrnutí — který je lepší pro jaký use-case.`)
+  }
+
+  // Trend context (F8)
+  if (context?.trend?.length > 0) {
+    const sorted = [...context.trend].sort((a, b) => b.monthlyGrowth - a.monthlyGrowth)
+    extraSections.push('📈 **Trendy nástrojů (měsíční růst GitHub ⭐):**\n' +
+      sorted.map((t, i) =>
+        `${i + 1}. **${t.name}** — ⭐${t.stars} | 📈 ${t.monthlyGrowth}/měsíc | 📅 ${t.ageDays}d | 🔧${t.language || '?'}`
+      ).join('\n') +
+      '\n\nOdpověz na otázku o trendech. Pokud je to vhodné, uveď tabulku s růstem a doporuč nástroje.')
   }
 
   return `Jsi AI asistent ToolSage — databáze vývojářských nástrojů. Komunikuješ v češtině.
 
 Máš k dispozici tyto nástroje v databázi:
 ${toolList || '(databáze zatím neobsahuje žádné nástroje)'}
-${searchContext}
+${extraSections.join('\n\n')}
 
 Tvé schopnosti:
 1. Odpovídat na otázky, konverzovat, pomáhat s vývojem
 2. Doporučovat nástroje z databáze podle potřeb uživatele
-3. 🌐 **Vyhledávání na webu a GitHubu** — když uživatel řekne "najdi", "hledej", "doporuč", "vyhledej", "co umí" + téma, nebo se ptá na nástroje mimo DB, backend už provedl vyhledání a výsledky máš nahoře v sekci "Výsledky z vyhledávání". Použij je pro odpověď. U každého nástroje uveď: název, popis, web, GitHub hvězdičky, kategorie, cenu.
-4. ➕ **Přidání nástroje do databáze s kompletním info** — když uživatel řekne "přidej NÁZEV" (např. "přidej CrewAI"), odpověz přesně tímto formátem:
+3. 🌐 **Vyhledávání na webu a GitHubu** — když uživatel řekne "najdi", "hledej", "doporuč", "vyhledej", "co umí" + téma, nebo se ptá na nástroje mimo DB, backend už provedl vyhledání a výsledky máš nahoře v sekci "Výsledky z vyhledávání". Použij je pro odpověď.
+4. 🔄 **Srovnání nástrojů** — když uživatel řekne "porovnej X vs Y" nebo "srovnej X a Y", backend už připravil srovnávací data. Vytvoř markdown tabulku a na konci shrnutí.
+5. 📈 **Trendy** — když uživatel řekne "trendy", "který nástroj letí", "růst hvězdiček", backend už připravil data. Odpověz s tabulkou růstu.
+6. 📥 **Import z GitHubu** — když uživatel pošle GitHub URL s "import", "stáhni", "načti", backend už načetl README. Analyzuj README a navrhni vytvoření nástroje pomocí [ADD] bloku. Pokud máš dost informací, rovnou vygeneruj [ADD] blok.
+7. ➕ **Přidání nástroje** — viz formát níže:
 \`\`\`
 [ADD]
 name: CrewAI
-description: Framework pro orchestraci AI agentů – umožňuje definovat agenty, úkoly a crew
+description: Framework pro orchestraci AI agentů
 categories: AI/ML, DevOps
 pricing: open_source
 website: https://crewai.com
@@ -185,10 +210,9 @@ platforms: Web, CLI
 examples: from crewai import Agent, Task, Crew
 [ENDADD]
 \`\`\`
-   Pole name, description, categories jsou POVINNÁ. Ostatní jsou volitelná.
-   Pokud chce uživatel přidat VÍCE nástrojů najednou, napiš [ADD]...[ENDADD] pro každý zvlášť.
-5. ❌ **Smazání nástroje** — když uživatel řekne "smaž NÁZEV", odpověz přesně: [DELETE]NÁZEV
-6. Pokud chce najít něco co není v DB ani ve výsledcích vyhledávání, řekni to a navrhni přidání
+   Pole name, description, categories jsou POVINNÁ.
+8. ❌ **Smazání nástroje** — [DELETE]NÁZEV
+9. Pokud chce najít něco co není v DB ani ve výsledcích, řekni to a navrhni přidání
 
 Jsi přátelský, užitečný a vždy v češtině.`
 }
@@ -207,6 +231,104 @@ function wantsSearch(message) {
   const wantDbSearch = lower.includes('v databázi') || lower.includes('v db') || lower.includes('z databáze')
   if (wantDbSearch) return false
   return searchTriggers.some(t => lower.includes(t))
+}
+
+// ─── Detect compare intent (F1) ───────────────────────────────
+function wantsCompare(message) {
+  const lower = message.toLowerCase().trim()
+  const prefixes = ['porovnej', 'srovnej', 'srovnav', 'compare', 'který je lepší', 'ktery je lepsi', 'rozdíl mezi', 'rozdil mezi', 'vs ', ' versus ']
+  return prefixes.some(t => lower.includes(t))
+}
+
+function extractCompareTools(message) {
+  let lower = message.toLowerCase().trim()
+  lower = lower.replace(/^(porovnej|srovnej|srovnav|compare|rozdíl mezi|rozdil mezi)\s+/i, '')
+  // Split by vs/versus/,,/a/nebo
+  const parts = lower.split(/\s+(?:vs|versus|vs\.|a|nebo|,\s*)\s+/).filter(Boolean)
+  return parts.map(p => p.replace(/[^a-zá-ž0-9\s.-]/gi, '').trim()).filter(p => p.length > 1).slice(0, 5)
+}
+
+// ─── Fetch GitHub repo details (stars, license, language, topics) ──
+async function searchGitHubRepo(repoFullName) {
+  const token = process.env.GITHUB_TOKEN
+  try {
+    const options = { headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ToolSage' }, timeout: 6000 }
+    if (token) options.headers['Authorization'] = `Bearer ${token}`
+    const data = await new Promise((resolve, reject) => {
+      const req = https.get(`https://api.github.com/repos/${encodeURIComponent(repoFullName)}`, options, (res) => {
+        let body = ''; res.on('data', chunk => { body += chunk.toString() }); res.on('end', () => resolve(body))
+      })
+      req.on('error', reject); req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    })
+    const r = JSON.parse(data)
+    if (r.message === 'Not Found') return null
+    return {
+      name: r.full_name, description: (r.description || '').substring(0, 300),
+      stars: r.stargazers_count || 0, forks: r.forks_count || 0,
+      language: r.language || '', topics: r.topics || [],
+      license: r.license?.spdx_id || '', url: r.html_url,
+      homepage: r.homepage || '', createdAt: r.created_at,
+      updatedAt: r.updated_at, openIssues: r.open_issues_count || 0
+    }
+  } catch (e) { return null }
+}
+
+// ─── Fetch GitHub README (F5) ─────────────────────────────────
+async function fetchGitHubReadme(githubUrl) {
+  const match = githubUrl.match(/github\.com\/([\w.-]+)\/([\w.-]+)/)
+  if (!match) return null
+  const [, owner, repo] = match
+  const token = process.env.GITHUB_TOKEN
+  try {
+    const headers = { 'Accept': 'application/vnd.github.raw+json', 'User-Agent': 'ToolSage' }
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const data = await new Promise((resolve, reject) => {
+      const req = https.get(`https://api.github.com/repos/${owner}/${repo}/readme`, { headers, timeout: 10000 }, (res) => {
+        let body = ''; res.on('data', chunk => { body += chunk.toString() }); res.on('end', () => resolve(res.statusCode === 200 ? body : null))
+      })
+      req.on('error', reject); req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    })
+    if (!data) return null
+    // Also fetch repo info for metadata
+    const repoInfo = await searchGitHubRepo(`${owner}/${repo}`)
+    return { readme: data.substring(0, 32000), repo: repoInfo, owner, repo: repo }
+  } catch (e) { return null }
+}
+
+// ─── Fetch GitHub star trend (F8) ─────────────────────────────
+async function getGitHubTrend(githubUrl) {
+  const match = githubUrl.match(/github\.com\/([\w.-]+)\/([\w.-]+)/)
+  if (!match) return null
+  const [, owner, repo] = match
+  const token = process.env.GITHUB_TOKEN
+  try {
+    const headers = { 'Accept': 'application/vnd.github.v3.star+json', 'User-Agent': 'ToolSage' }
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const [starData, repoData] = await Promise.all([
+      new Promise((resolve, reject) => {
+        const req = https.get(`https://api.github.com/repos/${owner}/${repo}/stargazers?per_page=1&page=1`, { headers, timeout: 6000 }, (res) => {
+          const link = res.headers['link'] || ''
+          const lastMatch = link.match(/page=(\d+)>; rel="last"/)
+          resolve(lastMatch ? parseInt(lastMatch[1]) : 0)
+        })
+        req.on('error', reject); req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      }),
+      searchGitHubRepo(`${owner}/${repo}`)
+    ])
+    if (!repoData) return null
+    const totalStars = starData || repoData.stars
+    const ageDays = repoData.createdAt ? Math.max(1, (Date.now() - new Date(repoData.createdAt).getTime()) / 86400000) : 1
+    const weeklyGrowth = totalStars / Math.max(1, ageDays / 7)
+    const monthlyGrowth = totalStars / Math.max(1, ageDays / 30)
+    return {
+      name: `${owner}/${repo}`, stars: totalStars, language: repoData.language,
+      license: repoData.license, ageDays: Math.round(ageDays),
+      weeklyGrowth: Math.round(weeklyGrowth * 10) / 10,
+      monthlyGrowth: Math.round(monthlyGrowth * 10) / 10,
+      starsPerDay: Math.round((totalStars / ageDays) * 10) / 10,
+      url: repoData.url
+    }
+  } catch (e) { return null }
 }
 
 // ─── Parse multi-line [ADD] block ─────────────────────────────
@@ -231,9 +353,52 @@ router.post('/chat', async (req, res) => {
 
     const lowerMsg = message.toLowerCase().trim()
 
+    // ─── Detect compare intent (F1) ────────────────────────────
+    let compareData = null
+    if (wantsCompare(message)) {
+      const toolNames = extractCompareTools(message)
+      if (toolNames.length >= 2) {
+        console.log('[Compare] Comparing:', toolNames.join(', '))
+        // Search DB + GitHub for each tool
+        const results = await Promise.all(toolNames.map(async (name) => {
+          const dbMatch = await searchToolsInDB(name)
+          const ghSearch = await searchGitHub(name + ' tool', 3)
+          const ghDetail = ghSearch.length > 0 ? await searchGitHubRepo(ghSearch[0].name) : null
+          return { name, db: dbMatch.slice(0, 2), gh: ghDetail || ghSearch[0] || null }
+        }))
+        compareData = results
+      }
+    }
+
+    // ─── Detect GitHub import intent (F5) ─────────────────────
+    let githubReadmeData = null
+    const ghImportMatch = message.match(/(?:import|stáhni|stahni|načti|nacti|zpracuj)\s+(?:z\s+)?(?:github|git)?\s*(?::\s*)?(https?:\/\/github\.com\/[\w.-]+\/[\w.-]+)/i)
+    if (ghImportMatch) {
+      const url = ghImportMatch[1]
+      console.log('[GitHub] Importing README from:', url)
+      const readmeResult = await fetchGitHubReadme(url)
+      if (readmeResult?.readme) {
+        githubReadmeData = { url, ...readmeResult }
+      }
+    }
+
+    // ─── Detect trend intent (F8) ─────────────────────────────
+    let trendData = null
+    const trendTriggers = ['trend', 'růst', 'rust', 'stoupá', 'stoupa', 'letí', 'leti', 'growth', 'popularita', 'stars']
+    if (trendTriggers.some(t => lowerMsg.includes(t))) {
+      console.log('[Trend] Detecting trend intent')
+      // Extract tool names from DB, get GitHub trends
+      const allTools = await getAllTools()
+      const ghUrls = allTools.map(t => t.github || '').filter(Boolean)
+      const trendResults = await Promise.all(
+        ghUrls.slice(0, 10).map(url => getGitHubTrend(url))
+      )
+      trendData = trendResults.filter(Boolean)
+    }
+
     // ─── Detect search intent & perform search ──────────────────
     let searchResults = null
-    if (wantsSearch(message)) {
+    if (wantsSearch(message) && !compareData && !githubReadmeData && !trendData) {
       const searchQuery = lowerMsg
         .replace(/^(najdi|hledej|vyhledej|doporuč|doporuc|popiš|popis|co je|co umí|co umi|find|search|show me|what is)\s+/i, '')
         .replace(/\b(nástroj|nastroj|tool|software|aplikace|program|na|pro|který|ktery|nejlepší|nejlepsi)\b/gi, '')
@@ -246,11 +411,13 @@ router.post('/chat', async (req, res) => {
       }
     }
 
-    // ─── Build system prompt with optional search context ──────
-    const systemPrompt = await buildSystemPrompt(searchResults)
+    // ─── Build system prompt with context ──────────────────────
+    const extraContext = { search: searchResults, compare: compareData, githubReadme: githubReadmeData, trend: trendData }
+    const systemPrompt = await buildSystemPrompt(extraContext)
     const history = (conversationHistory || []).slice(-10)
     const llmMessages = [
       ...history.map(m => ({ role: m.role, content: m.content })),
+      ...(githubReadmeData ? [{ role: 'system', content: `Načten README z GitHubu: ${githubReadmeData.url}\n\n${githubReadmeData.readme.substring(0, 8000)}` }] : []),
       { role: 'user', content: message }
     ]
     let llmReply = await callLLM(llmMessages, systemPrompt)
