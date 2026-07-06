@@ -1,4 +1,5 @@
 const express = require('express')
+const https = require('https')
 const router = express.Router()
 const { supabase, supabaseAdmin } = require('../db')
 
@@ -47,7 +48,7 @@ async function callDeepSeek(messages, systemPrompt) {
           { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
           ...messages
         ],
-        max_tokens: 2048,
+        max_tokens: 4096,
         temperature: 0.7
       })
     })
@@ -69,7 +70,7 @@ async function callGemini(messages, systemPrompt) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+        generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
       })
     })
     if (!resp.ok) { console.warn('[LLM] Gemini:', resp.status); return null }
@@ -91,7 +92,6 @@ async function callLLM(messages, systemPrompt) {
 async function searchGitHub(query, maxResults = 10) {
   const token = process.env.GITHUB_TOKEN
   try {
-    const https = require('https')
     const q = encodeURIComponent(query + ' topic:developer-tool OR topic:framework OR topic:cli')
     const headers = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ToolSage' }
     if (token) headers['Authorization'] = `Bearer ${token}`
@@ -645,7 +645,6 @@ async function webSearchTools(toolName, fullQuery, maxResults = 10) {
   // Brave Search
   if (braveKey) {
     try {
-      const https = require('https')
       const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
       const data = await new Promise((resolve, reject) => {
         const req = https.get(`https://api.search.brave.com/res/v1/web/search?q=${q}&count=${Math.min(maxResults, 10)}`, {
@@ -670,7 +669,6 @@ async function webSearchTools(toolName, fullQuery, maxResults = 10) {
   // SerpAPI
   if (serpKey && allResults.length < maxResults) {
     try {
-      const https = require('https')
       const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
       const data = await new Promise((resolve, reject) => {
         https.get(`https://serpapi.com/search.json?q=${q}&api_key=${serpKey}&num=${Math.min(maxResults, 10)}`, { timeout: 6000 }, (res) => {
@@ -690,7 +688,6 @@ async function webSearchTools(toolName, fullQuery, maxResults = 10) {
   // DuckDuckGo
   if (allResults.length < maxResults) {
     try {
-      const https = require('https')
       const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
       const html = await new Promise((resolve, reject) => {
         const req = https.get(`https://html.duckduckgo.com/html/?q=${q}`, {
@@ -744,7 +741,6 @@ async function webSearchTool(toolName, fullQuery) {
   // Prioritně Brave Search
   if (braveKey) {
     try {
-      const https = require('https')
       const q = encodeURIComponent(fullQuery || `${toolName} developer tool`)
       const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${q}&count=5`
 
@@ -790,7 +786,6 @@ async function webSearchTool(toolName, fullQuery) {
   // Fallback: SerpAPI (Google results)
   if (serpKey) {
     try {
-      const https = require('https')
       const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
       const serpUrl = `https://serpapi.com/search.json?q=${q}&api_key=${serpKey}&num=5`
 
@@ -824,7 +819,6 @@ async function webSearchTool(toolName, fullQuery) {
 
   // Fallback: DuckDuckGo (vždy zdarma, bez API klíče)
   try {
-    const https = require('https')
     const q = encodeURIComponent(fullQuery || `${toolName} developer tool 2026`)
     const ddgUrl = `https://html.duckduckgo.com/html/?q=${q}`
 
@@ -1018,11 +1012,10 @@ router.post('/lookup-tool', async (req, res) => {
     // 2. Zkus vyhledat na webu (pokud máme URL)
     if (url && url.startsWith('http')) {
       try {
-        const https = require('https')
-        const http = url.startsWith('https') ? https : http
+        const httpLib = url.startsWith('https') ? https : require('http')
 
         const html = await new Promise((resolve, reject) => {
-          const req = http.get(url, { timeout: 8000 }, (res) => {
+          const req = httpLib.get(url, { timeout: 8000 }, (res) => {
             let data = ''
             res.on('data', chunk => { data += chunk.toString().substring(0, 50000) })
             res.on('end', () => resolve(data))

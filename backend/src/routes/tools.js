@@ -111,18 +111,18 @@ router.post('/', async (req, res) => {
 // PUT /tools/:id
 router.put('/:id', async (req, res) => {
   try {
+    const updateData = {
+      name: req.body.name,
+      description: req.body.description,
+      categories: req.body.categories,
+      tags: req.body.tags,
+      setupGuides: req.body.setupGuides,
+      pricingModel: req.body.pricingModel,
+      compatibility: req.body.compatibility || { os: [], platforms: [] },
+      updatedAt: new Date().toISOString()
+    }
     const { data, error } = await db().from('tools')
-      .update({
-        name: req.body.name,
-        description: req.body.description,
-        categories: req.body.categories,
-        tags: req.body.tags,
-        setup_guides: req.body.setupGuides,
-        pricing_model: req.body.pricingModel,
-        compatibility_os: req.body.compatibility?.os,
-        compatibility_platforms: req.body.compatibility?.platforms,
-        updated_at: new Date()
-      })
+      .update(updateData)
       .eq('id', req.params.id)
       .select()
       .single()
