@@ -24,7 +24,7 @@ async function callOpenRouter(messages, systemPrompt) {
           { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
           ...messages
         ],
-        max_tokens: 2048,
+        max_tokens: 4096,
         temperature: 0.7
       })
     })
@@ -87,8 +87,60 @@ async function callLLM(messages, systemPrompt) {
   return result
 }
 
+// ─── GitHub API search ─────────────────────────────────────────
+async function searchGitHub(query, maxResults = 10) {
+  const token = process.env.GITHUB_TOKEN
+  try {
+    const https = require('https')
+    const q = encodeURIComponent(query + ' topic:developer-tool OR topic:framework OR topic:cli')
+    const headers = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ToolSage' }
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const data = await new Promise((resolve, reject) => {
+      const req = https.get(`https://api.github.com/search/repositories?q=${q}&sort=stars&order=desc&per_page=${Math.min(maxResults, 30)}`, { headers, timeout: 8000 }, (res) => {
+        let body = ''
+        res.on('data', chunk => { body += chunk.toString() })
+        res.on('end', () => resolve(body))
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    })
+    const json = JSON.parse(data)
+    return (json.items || []).map(r => ({
+      name: r.full_name || r.name,
+      description: (r.description || '').substring(0, 300),
+      website: r.homepage || r.html_url || '',
+      github: r.html_url || `https://github.com/${r.full_name}`,
+      stars: r.stargazers_count || 0,
+      language: r.language || '',
+      topics: r.topics || [],
+      license: r.license?.spdx_id || '',
+      pricingModel: r.license?.spdx_id?.toLowerCase().includes('gpl') || r.license?.spdx_id === 'MIT' || r.license?.spdx_id === 'Apache-2.0' ? 'open_source' : 'free',
+      categories: classifyToolCategory((r.description || '') + ' ' + (r.topics || []).join(' ')),
+      source: 'github'
+    }))
+  } catch (e) { console.warn('[GitHub] search error:', e.message); return [] }
+}
+
+// ─── Combined web + GitHub search ──────────────────────────────
+async function searchWebAndGitHub(query, maxResults = 8) {
+  const [webResults, ghResults] = await Promise.all([
+    webSearchTools(query, query, maxResults),
+    searchGitHub(query, maxResults)
+  ])
+  const combined = [...webResults]
+  const seenUrls = new Set(combined.map(r => r.github || r.website || r.name))
+  for (const gh of ghResults) {
+    const key = gh.github || gh.name
+    if (!seenUrls.has(key)) {
+      seenUrls.add(key)
+      combined.push(gh)
+    }
+  }
+  return combined.slice(0, maxResults)
+}
+
 // ─── Build system prompt s kontextem databáze ──────────────────
-async function buildSystemPrompt() {
+async function buildSystemPrompt(withSearchContext = null) {
   const client = supabaseAdmin || supabase
   let tools = []
   try {
@@ -98,19 +150,77 @@ async function buildSystemPrompt() {
   const toolList = tools.map(t =>
     `- ${t.name}: ${(t.description || '').substring(0, 120)} [${(t.categories || []).join(', ')}] [${t.pricingModel || '?'}]`
   ).join('\n')
+
+  let searchContext = ''
+  if (withSearchContext && withSearchContext.length > 0) {
+    searchContext = '\n\n📡 **Výsledky z vyhledávání (web + GitHub):**\n' +
+      withSearchContext.map((r, i) =>
+        `${i + 1}. **${r.name}** ${r.stars ? '⭐' + r.stars : ''}\n   📝 ${(r.description || '').substring(0, 200)}\n   🌍 ${r.website || ''}${r.github ? ' | 💻 ' + r.github : ''}\n   📂 ${(r.categories || []).join(', ')} | 💰 ${r.pricingModel || '?'}${r.language ? ' | 🔧 ' + r.language : ''}`
+      ).join('\n\n')
+  }
+
   return `Jsi AI asistent ToolSage — databáze vývojářských nástrojů. Komunikuješ v češtině.
 
 Máš k dispozici tyto nástroje v databázi:
 ${toolList || '(databáze zatím neobsahuje žádné nástroje)'}
+${searchContext}
 
 Tvé schopnosti:
 1. Odpovídat na otázky, konverzovat, pomáhat s vývojem
 2. Doporučovat nástroje z databáze podle potřeb uživatele
-3. Pokud uživatel řekne "přidej NÁZEV" — odpověz přesně: [ADD]NÁZEV|popis|kategorie|cena
-4. Pokud uživatel řekne "smaž NÁZEV" — odpověz přesně: [DELETE]NÁZEV
-5. Pokud chce najít něco co není v DB, řekni to a navrhni přidání
+3. 🌐 **Vyhledávání na webu a GitHubu** — když uživatel řekne "najdi", "hledej", "doporuč", "vyhledej", "co umí" + téma, nebo se ptá na nástroje mimo DB, backend už provedl vyhledání a výsledky máš nahoře v sekci "Výsledky z vyhledávání". Použij je pro odpověď. U každého nástroje uveď: název, popis, web, GitHub hvězdičky, kategorie, cenu.
+4. ➕ **Přidání nástroje do databáze s kompletním info** — když uživatel řekne "přidej NÁZEV" (např. "přidej CrewAI"), odpověz přesně tímto formátem:
+\`\`\`
+[ADD]
+name: CrewAI
+description: Framework pro orchestraci AI agentů – umožňuje definovat agenty, úkoly a crew
+categories: AI/ML, DevOps
+pricing: open_source
+website: https://crewai.com
+github: https://github.com/crewAIInc/crewAI
+tags: ai, agents, orchestration, framework, python
+setup: pip install crewai
+os: Windows, macOS, Linux
+platforms: Web, CLI
+examples: from crewai import Agent, Task, Crew
+[ENDADD]
+\`\`\`
+   Pole name, description, categories jsou POVINNÁ. Ostatní jsou volitelná.
+   Pokud chce uživatel přidat VÍCE nástrojů najednou, napiš [ADD]...[ENDADD] pro každý zvlášť.
+5. ❌ **Smazání nástroje** — když uživatel řekne "smaž NÁZEV", odpověz přesně: [DELETE]NÁZEV
+6. Pokud chce najít něco co není v DB ani ve výsledcích vyhledávání, řekni to a navrhni přidání
 
 Jsi přátelský, užitečný a vždy v češtině.`
+}
+
+// ─── Detect whether user wants web/GitHub search ──────────────
+function wantsSearch(message) {
+  const lower = message.toLowerCase().trim()
+  const searchTriggers = [
+    'najdi', 'hledej', 'vyhled', 'doporuč', 'doporuc', 'doporučil', 'doporucil',
+    'co je', 'co umí', 'co umi', 'co dělá', 'co dela', 'popiš', 'popis',
+    'find', 'search', 'lookup', 'recommend', 'what is', 'show me',
+    'nejlepší', 'nejlepsi', 'porad', 'tip', 'ukaz',
+    'orchestr', 'framework', 'platform', 'engine', 'library',
+    'nástroj', 'nastroj', 'tool', 'software', 'aplikace', 'program'
+  ]
+  const wantDbSearch = lower.includes('v databázi') || lower.includes('v db') || lower.includes('z databáze')
+  if (wantDbSearch) return false
+  return searchTriggers.some(t => lower.includes(t))
+}
+
+// ─── Parse multi-line [ADD] block ─────────────────────────────
+function parseAddBlock(block) {
+  const fields = {}
+  const lines = block.split('\n').map(l => l.trim()).filter(l => l)
+  for (const line of lines) {
+    const sep = line.indexOf(':')
+    if (sep === -1) continue
+    const key = line.substring(0, sep).trim().toLowerCase()
+    const val = line.substring(sep + 1).trim()
+    if (val) fields[key] = val
+  }
+  return fields
 }
 
 // POST /ai/chat - AI chat
@@ -119,42 +229,41 @@ router.post('/chat', async (req, res) => {
     const { message, conversationHistory } = req.body
     if (!message) return res.status(400).json({ error: 'Message is required' })
 
-    // ─── LLM first ─────────────────────────────────────────────
-    const systemPrompt = await buildSystemPrompt()
-    const history = (conversationHistory || []).slice(-10) // posledních 10 zpráv
+    const lowerMsg = message.toLowerCase().trim()
+
+    // ─── Detect search intent & perform search ──────────────────
+    let searchResults = null
+    if (wantsSearch(message)) {
+      const searchQuery = lowerMsg
+        .replace(/^(najdi|hledej|vyhledej|doporuč|doporuc|popiš|popis|co je|co umí|co umi|find|search|show me|what is)\s+/i, '')
+        .replace(/\b(nástroj|nastroj|tool|software|aplikace|program|na|pro|který|ktery|nejlepší|nejlepsi)\b/gi, '')
+        .trim()
+        .substring(0, 100) || message.substring(0, 100)
+      if (searchQuery.length > 3) {
+        console.log('[Chat] Searching for:', searchQuery)
+        searchResults = await searchWebAndGitHub(searchQuery, 10)
+        console.log(`[Chat] Found ${searchResults.length} results`)
+      }
+    }
+
+    // ─── Build system prompt with optional search context ──────
+    const systemPrompt = await buildSystemPrompt(searchResults)
+    const history = (conversationHistory || []).slice(-10)
     const llmMessages = [
       ...history.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: message }
     ]
     let llmReply = await callLLM(llmMessages, systemPrompt)
 
-    // ─── Parse LLM action (add/delete tool) ────────────────────
+    // ─── Parse LLM actions ─────────────────────────────────────
     let createdTool = null
     let suggestedTools = []
+    const createdTools = []
 
     if (llmReply) {
-      const addMatch = llmReply.match(/\[ADD\](\S[^|]*)\|([^|]*)\|([^|]*)\|([^\]]*)/)
-      const deleteMatch = llmReply.match(/\[DELETE\](\S[^|]*)/)
-
-      if (addMatch) {
-        const name = addMatch[1].trim()
-        const desc = addMatch[2].trim()
-        const cats = addMatch[3].split(',').map(s => s.trim()).filter(Boolean)
-        const pricing = addMatch[4].trim() || 'free'
-        try {
-          const client = supabaseAdmin || supabase
-          const { data: newTool, error: createError } = await client
-            .from('tools')
-            .insert({ name, description: desc, categories: cats.length > 0 ? cats : ['Ostatní'], pricingModel: pricing })
-            .select().single()
-          if (!createError && newTool) {
-            llmReply = `✅ **"${newTool.name}"** přidán do databáze!\n\n${llmReply.replace(/\[ADD\].*/, '').trim()}`
-            createdTool = { id: newTool.id, name: newTool.name }
-          }
-        } catch (e) {
-          llmReply = `❌ Chyba při přidávání: ${e.message}\n\n${llmReply}`
-        }
-      } else if (deleteMatch) {
+      // Delete tool
+      const deleteMatch = llmReply.match(/\[DELETE\](\S[^\]]*)/)
+      if (deleteMatch) {
         const name = deleteMatch[1].trim()
         try {
           const client = supabaseAdmin || supabase
@@ -168,7 +277,87 @@ router.post('/chat', async (req, res) => {
         }
       }
 
-      // Extract suggested tool names from LLM response
+      // Multi-line ADD blocks [ADD]...[ENDADD]
+      const addRegex = /\[ADD\]\s*([\s\S]*?)\s*\[ENDADD\]/gi
+      let addMatch
+      while ((addMatch = addRegex.exec(llmReply)) !== null) {
+        const fields = parseAddBlock(addMatch[1])
+        const name = fields['name']
+        if (!name) continue
+        try {
+          const client = supabaseAdmin || supabase
+          const desc = fields['description'] || ''
+          const cats = fields['categories']
+            ? fields['categories'].split(',').map(s => s.trim()).filter(Boolean)
+            : ['Ostatní']
+          const pricing = fields['pricing'] || 'free'
+          const tags = fields['tags']
+            ? fields['tags'].split(',').map(s => s.trim()).filter(Boolean)
+            : []
+          const website = fields['website'] || ''
+          const github = fields['github'] || ''
+          const setup = fields['setup'] || ''
+          const examples = fields['examples'] || ''
+          const os = fields['os']
+            ? fields['os'].split(',').map(s => s.trim()).filter(Boolean)
+            : []
+          const platforms = fields['platforms']
+            ? fields['platforms'].split(',').map(s => s.trim()).filter(Boolean)
+            : []
+
+          // Slož setupGuides z více polí
+          let setupGuides = setup
+          if (examples) setupGuides += (setupGuides ? '\n\n' : '') + '📋 Příklady použití:\n' + examples
+          if (website && !setupGuides.includes(website)) setupGuides += (setupGuides ? '\n\n' : '') + `🔗 Web: ${website}`
+          if (github && !setupGuides.includes(github)) setupGuides += (setupGuides ? '\n\n' : '') + `💻 GitHub: ${github}`
+
+          const { data: newTool, error: createError } = await client
+            .from('tools')
+            .insert({
+              name,
+              description: desc,
+              categories: cats,
+              tags,
+              pricingModel: pricing,
+              setupGuides: setupGuides.substring(0, 2000),
+              compatibility: { os, platforms }
+            })
+            .select().single()
+
+          if (!createError && newTool) {
+            createdTools.push({ id: newTool.id, name: newTool.name })
+          }
+        } catch (e) {
+          console.warn('[ADD] Error creating tool:', e.message)
+        }
+      }
+
+      // Also try old single-line [ADD] format for backward compat
+      const oldAddMatch = llmReply.match(/\[ADD\](\S[^|]*)\|([^|]*)\|([^|]*)\|([^\]]*)/)
+      if (oldAddMatch && createdTools.length === 0) {
+        const name = oldAddMatch[1].trim()
+        const desc = oldAddMatch[2].trim()
+        const cats = oldAddMatch[3].split(',').map(s => s.trim()).filter(Boolean)
+        const pricing = oldAddMatch[4].trim() || 'free'
+        try {
+          const client = supabaseAdmin || supabase
+          const { data: newTool } = await client.from('tools').insert({
+            name, description: desc,
+            categories: cats.length > 0 ? cats : ['Ostatní'],
+            pricingModel: pricing
+          }).select().single()
+          if (newTool) createdTools.push({ id: newTool.id, name: newTool.name })
+        } catch (_) {}
+      }
+
+      // Build success message
+      if (createdTools.length > 0) {
+        const toolNames = createdTools.map(t => `"${t.name}"`).join(', ')
+        llmReply = `✅ Nástroje ${toolNames} přidány do databáze!\n\n${llmReply.replace(/\[ADD\][\s\S]*?\[ENDADD\]/gi, '').replace(/\[ADD\][^\]]*(\][^\[]*)?/g, '').trim()}`
+        createdTool = createdTools[createdTools.length - 1]
+      }
+
+      // Extract suggested tool names
       const allTools = await getAllTools()
       suggestedTools = allTools
         .filter(t => llmReply.toLowerCase().includes(t.name.toLowerCase().substring(0, 20)))
