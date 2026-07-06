@@ -82,6 +82,8 @@ router.post('/', async (req, res) => {
       tags: req.body.tags || [],
       setupGuides: req.body.setupGuides || '',
       pricingModel: req.body.pricingModel || 'free',
+      website: req.body.website || '',
+      github: req.body.github || '',
       compatibility: req.body.compatibility || { os: [], platforms: [] },
       status: req.body.status || 'published',
       averageRating: req.body.averageRating || 0,
@@ -118,6 +120,8 @@ router.put('/:id', async (req, res) => {
       tags: req.body.tags,
       setupGuides: req.body.setupGuides,
       pricingModel: req.body.pricingModel,
+      website: req.body.website,
+      github: req.body.github,
       compatibility: req.body.compatibility || { os: [], platforms: [] },
       updatedAt: new Date().toISOString()
     }
@@ -138,7 +142,7 @@ router.put('/:id', async (req, res) => {
 router.patch('/:id', async (req, res) => {
   try {
     const { data, error } = await db().from('tools')
-      .update({ ...req.body, updated_at: new Date() })
+      .update({ ...req.body, updatedAt: new Date().toISOString() })
       .eq('id', req.params.id)
       .select()
       .single()

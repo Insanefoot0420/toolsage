@@ -14,8 +14,11 @@ function verifySignature(payload, signature) {
 }
 
 // POST /webhooks/github - receive GitHub webhook events
+// GUARD: tato route je registrována na /webhooks i /tools/:id.
+// Když se request dostal přes /tools/:id/github, ignorujeme ho.
 router.post('/github', async (req, res) => {
   try {
+    if (req.params.id) return res.status(404).json({ error: 'Not found' })
     const signature = req.headers['x-hub-signature-256']
     const event = req.headers['x-github-event']
     const payload = JSON.stringify(req.body)
