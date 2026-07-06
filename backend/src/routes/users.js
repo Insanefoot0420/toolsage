@@ -1,12 +1,13 @@
 const express = require('express')
 const router = express.Router()
-const { supabase } = require('../db')
+const { supabase, supabaseAdmin } = require('../db')
+const db = () => supabaseAdmin || supabase
 const { v4: uuidv4 } = require('uuid')
 
 // GET /users/:id
 router.get('/:id', async (req, res) => {
   try {
-    const { data, error } = await supabase.from('users')
+    const { data, error } = await db().from('users')
       .select('*')
       .eq('id', req.params.id)
       .single()

@@ -11,7 +11,8 @@
 
 const express = require('express')
 const router = express.Router()
-const { supabase } = require('../db')
+const { supabase, supabaseAdmin } = require('../db')
+const db = () => supabaseAdmin || supabase
 
 // ─── Format helpers ────────────────────────────────────────────
 
@@ -142,8 +143,8 @@ router.get('/:id/export', async (req, res) => {
 
     let tool
 
-    if (supabase) {
-      const { data, error } = await supabase
+    if (db()) {
+      const { data, error } = await db()
         .from('tools')
         .select('*')
         .eq('id', id)
@@ -182,12 +183,12 @@ router.post('/:id/send-to-agent', async (req, res) => {
       return res.status(400).json({ error: 'Chybí agent_id' })
     }
 
-    if (!supabase) {
+    if (!db()) {
       return res.status(503).json({ error: 'Databáze není dostupná' })
     }
 
     // Načti nástroj
-    const { data: tool, error: toolError } = await supabase
+    const { data: tool, error: toolError } = await db()
       .from('tools')
       .select('*')
       .eq('id', id)
@@ -199,7 +200,7 @@ router.post('/:id/send-to-agent', async (req, res) => {
 
     // Načti agenta (fallback na demo agenty pokud DB lookup selže)
     let agent = null
-    const { data: agentData, error: agentError } = await supabase
+    const { data: agentData, error: agentError } = await db()
       .from('agents')
       .select('*')
       .eq('id', agent_id)
@@ -293,7 +294,7 @@ router.post('/:id/send-to-agent', async (req, res) => {
 
     // Log aktivity
     try {
-      await supabase.from('agent_activity_log').insert({
+      await db().from('agent_activity_log').insert({
         agent_id: agent_id,
         agent_name: agent.name || 'unknown',
         action: 'tool_card_sent',

@@ -1,12 +1,13 @@
 const express = require('express')
 const router = express.Router()
-const { supabase } = require('../db')
+const { supabase, supabaseAdmin } = require('../db')
 const { v4: uuidv4 } = require('uuid')
+const db = () => supabaseAdmin || supabase
 
 // GET /tools - list tools
 router.get('/', async (req, res) => {
   try {
-    let query = supabase.from('tools').select('*')
+    let query = db().from('tools').select('*')
 
     const { category, tag, search, limit, offset, sort_by, order } = req.query
 
@@ -49,7 +50,7 @@ router.get('/', async (req, res) => {
 // GET /tools/:id
 router.get('/:id', async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tools')
+    const { data, error } = await db().from('tools')
       .select('*')
       .eq('id', req.params.id)
       .single()
@@ -88,8 +89,8 @@ router.post('/', async (req, res) => {
     }
 
     // Save to Supabase (with camelCase columns)
-    if (supabase) {
-      const { data, error } = await supabase.from('tools').insert(tool).select().single()
+    if (db()) {
+      const { data, error } = await db().from('tools').insert(tool).select().single()
       if (error) throw error
       return res.status(201).json(data)
     }
@@ -110,7 +111,7 @@ router.post('/', async (req, res) => {
 // PUT /tools/:id
 router.put('/:id', async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tools')
+    const { data, error } = await db().from('tools')
       .update({
         name: req.body.name,
         description: req.body.description,
@@ -136,7 +137,7 @@ router.put('/:id', async (req, res) => {
 // PATCH /tools/:id
 router.patch('/:id', async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tools')
+    const { data, error } = await db().from('tools')
       .update({ ...req.body, updated_at: new Date() })
       .eq('id', req.params.id)
       .select()
@@ -152,7 +153,7 @@ router.patch('/:id', async (req, res) => {
 // DELETE /tools/:id
 router.delete('/:id', async (req, res) => {
   try {
-    const { error } = await supabase.from('tools')
+    const { error } = await db().from('tools')
       .delete()
       .eq('id', req.params.id)
 

@@ -15,7 +15,8 @@
 
 const express = require('express')
 const router = express.Router()
-const { supabase } = require('../db')
+const { supabase, supabaseAdmin } = require('../db')
+const db = () => supabaseAdmin || supabase
 
 // ─── Default categories ────────────────────────────────────────
 const DEFAULT_CATEGORIES = [
@@ -34,11 +35,11 @@ const DEFAULT_CATEGORIES = [
 // ─── GET /categories ───────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    if (!supabase) {
+    if (!db()) {
       return res.json(DEFAULT_CATEGORIES)
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await db()
       .from('categories')
       .select('name, icon, sort_order')
       .order('sort_order')
@@ -55,11 +56,11 @@ router.get('/', async (req, res) => {
 // ─── GET /categories/simple ────────────────────────────────────
 router.get('/simple', async (req, res) => {
   try {
-    if (!supabase) {
+    if (!db()) {
       return res.json(DEFAULT_CATEGORIES.map(c => c.name))
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await db()
       .from('categories')
       .select('name')
       .order('sort_order')
@@ -84,12 +85,12 @@ router.post('/', async (req, res) => {
 
     const trimmedName = name.trim()
 
-    if (!supabase) {
+    if (!db()) {
       return res.status(503).json({ error: 'Databáze není dostupná' })
     }
 
     // Zjisti max sort_order
-    const { data: maxData } = await supabase
+    const { data: maxData } = await db()
       .from('categories')
       .select('sort_order')
       .order('sort_order', { ascending: false })
@@ -97,7 +98,7 @@ router.post('/', async (req, res) => {
 
     const maxOrder = (maxData && maxData.length > 0) ? maxData[0].sort_order : 0
 
-    const client = supabase
+    const client = db()
     const { data, error } = await client
       .from('categories')
       .insert({
@@ -128,7 +129,7 @@ router.put('/:name', async (req, res) => {
     const { name } = req.params
     const { name: newName, icon, sort_order } = req.body
 
-    if (!supabase) {
+    if (!db()) {
       return res.status(503).json({ error: 'Databáze není dostupná' })
     }
 
@@ -141,7 +142,7 @@ router.put('/:name', async (req, res) => {
       return res.status(400).json({ error: 'Nebyla zadána žádná změna' })
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await db()
       .from('categories')
       .update(updates)
       .eq('name', name)
@@ -172,14 +173,14 @@ router.delete('/:name', async (req, res) => {
     const { name } = req.params
     const { reassign_to } = req.query // optional: kam přesunout nástroje
 
-    if (!supabase) {
+    if (!db()) {
       return res.status(503).json({ error: 'Databáze není dostupná' })
     }
 
     // Pokud je zadán reassign_to, přesuň nástroje
     if (reassign_to) {
       // Zjisti všechny nástroje v této kategorii
-      const { data: toolsInCategory } = await supabase
+      const { data: toolsInCategory } = await db()
         .from('tools')
         .select('id, categories')
         .contains('categories', [name])
@@ -190,7 +191,7 @@ router.delete('/:name', async (req, res) => {
           if (reassign_to !== 'none') {
             updatedCategories.push(reassign_to)
           }
-          await supabase
+          await db()
             .from('tools')
             .update({ categories: updatedCategories, updatedAt: new Date().toISOString() })
             .eq('id', tool.id)
@@ -199,7 +200,7 @@ router.delete('/:name', async (req, res) => {
     }
 
     // Smaž kategorii
-    const { data, error } = await supabase
+    const { data, error } = await db()
       .from('categories')
       .delete()
       .eq('name', name)
@@ -228,19 +229,19 @@ router.put('/reorder', async (req, res) => {
       return res.status(400).json({ error: 'Chybí pole order s novým pořadím kategorií' })
     }
 
-    if (!supabase) {
+    if (!db()) {
       return res.status(503).json({ error: 'Databáze není dostupná' })
     }
 
     for (let i = 0; i < order.length; i++) {
-      await supabase
+      await db()
         .from('categories')
         .update({ sort_order: i + 1 })
         .eq('name', order[i])
     }
 
     // Vrať aktualizovaný seznam
-    const { data, error } = await supabase
+    const { data, error } = await db()
       .from('categories')
       .select('name, icon, sort_order')
       .order('sort_order')
