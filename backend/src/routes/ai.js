@@ -4,10 +4,11 @@ const router = express.Router()
 const { supabase, supabaseAdmin } = require('../db')
 
 // ═══════════════════════════════════════════════════════════════
-// LLM providers (OpenRouter → DeepSeek → Gemini)
+// LLM providers — fallback řetěz:
+// OpenRouter (free modely) → Gemini → DeepSeek → Mistral → HuggingFace
 // ═══════════════════════════════════════════════════════════════
 
-async function callOpenRouter(messages, systemPrompt) {
+async function orCompletion(model, messages, systemPrompt) {
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) return null
   try {
@@ -20,7 +21,7 @@ async function callOpenRouter(messages, systemPrompt) {
         'X-Title': 'ToolSage'
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-chat',
+        model,
         messages: [
           { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
           ...messages
@@ -29,10 +30,38 @@ async function callOpenRouter(messages, systemPrompt) {
         temperature: 0.7
       })
     })
-    if (!resp.ok) { console.warn('[LLM] OpenRouter:', resp.status); return null }
+    if (!resp.ok) { console.warn(`[LLM] OpenRouter/${model}:`, resp.status); return null }
     const data = await resp.json()
     return data.choices?.[0]?.message?.content || null
-  } catch (e) { console.warn('[LLM] OpenRouter error:', e.message); return null }
+  } catch (e) { console.warn(`[LLM] OpenRouter/${model} error:`, e.message); return null }
+}
+
+async function callOpenRouter(messages, systemPrompt) {
+  // Zkus nejlepší free model, pak fallback na deepseek
+  let result = await orCompletion('google/gemini-2.0-flash-001', messages, systemPrompt)
+  if (result) return result
+  return await orCompletion('deepseek/deepseek-chat', messages, systemPrompt)
+}
+
+async function callGemini(messages, systemPrompt) {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) return null
+  try {
+    const conversationText = messages.map(m => `${m.role}: ${m.content}`).join('\n')
+    const prompt = systemPrompt ? `${systemPrompt}\n\n${conversationText}` : conversationText
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
+      })
+    })
+    if (!resp.ok) { console.warn('[LLM] Gemini:', resp.status); return null }
+    const data = await resp.json()
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || null
+  } catch (e) { console.warn('[LLM] Gemini error:', e.message); return null }
 }
 
 async function callDeepSeek(messages, systemPrompt) {
@@ -58,33 +87,64 @@ async function callDeepSeek(messages, systemPrompt) {
   } catch (e) { console.warn('[LLM] DeepSeek error:', e.message); return null }
 }
 
-async function callGemini(messages, systemPrompt) {
-  const apiKey = process.env.GEMINI_API_KEY
+async function callMistral(messages, systemPrompt) {
+  const apiKey = process.env.MISTRAL_API_KEY
+  if (!apiKey) return null
+  try {
+    const resp = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'mistral-small-latest',
+        messages: [
+          { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
+          ...messages
+        ],
+        max_tokens: 4096,
+        temperature: 0.7
+      })
+    })
+    if (!resp.ok) { console.warn('[LLM] Mistral:', resp.status); return null }
+    const data = await resp.json()
+    return data.choices?.[0]?.message?.content || null
+  } catch (e) { console.warn('[LLM] Mistral error:', e.message); return null }
+}
+
+async function callHuggingFace(messages, systemPrompt) {
+  const apiKey = process.env.HUGGINGFACE_API_KEY
   if (!apiKey) return null
   try {
     const conversationText = messages.map(m => `${m.role}: ${m.content}`).join('\n')
     const prompt = systemPrompt ? `${systemPrompt}\n\n${conversationText}` : conversationText
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`
-    const resp = await fetch(url, {
+    const resp = await fetch('https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
+        model: 'mistralai/Mistral-7B-Instruct-v0.3',
+        messages: [
+          { role: 'system', content: systemPrompt || 'Jsi užitečný AI asistent ToolSage.' },
+          ...messages
+        ],
+        max_tokens: 4096,
+        temperature: 0.7
       })
     })
-    if (!resp.ok) { console.warn('[LLM] Gemini:', resp.status); return null }
+    if (!resp.ok) { console.warn('[LLM] HuggingFace:', resp.status); return null }
     const data = await resp.json()
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || null
-  } catch (e) { console.warn('[LLM] Gemini error:', e.message); return null }
+    return data.choices?.[0]?.message?.content || null
+  } catch (e) { console.warn('[LLM] HuggingFace error:', e.message); return null }
 }
 
 async function callLLM(messages, systemPrompt) {
   let result = await callOpenRouter(messages, systemPrompt)
   if (result) return result
+  result = await callGemini(messages, systemPrompt)
+  if (result) return result
   result = await callDeepSeek(messages, systemPrompt)
   if (result) return result
-  result = await callGemini(messages, systemPrompt)
+  result = await callMistral(messages, systemPrompt)
+  if (result) return result
+  result = await callHuggingFace(messages, systemPrompt)
   return result
 }
 
